@@ -3,6 +3,11 @@
 A front end for the [Alien Worlds](https://github.com/Alien-Worlds) DAO contracts
 on WAX.
 
+**Live:** <https://foxbaguette.github.io/daomaster/>
+
+Not affiliated with Alien Worlds. Everything on the page is read from public
+chain data.
+
 **Stage 1** — every DAO and the custodians currently
 seated on it, with a switch between syndicates and unions, and — for whoever
 connects a wallet — what they hold in each.
