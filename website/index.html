@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAO Master — Alien Worlds councils</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&family=Share+Tech+Mono&display=swap"
+          rel="stylesheet">
+
+    <link rel="stylesheet" href="styles.css">
+
+    <!--
+      WharfKit ships ESM only (no UMD build, no window global), so it must load as
+      a module. `?external=` keeps antelope/common/session as a SINGLE shared
+      instance - duplicate copies break instanceof checks at runtime.
+    -->
+    <script type="importmap">
+    {
+      "imports": {
+        "@wharfkit/antelope": "https://esm.sh/@wharfkit/antelope@1.2.0",
+        "@wharfkit/common": "https://esm.sh/@wharfkit/common@1.5.0?external=@wharfkit/antelope",
+        "@wharfkit/session": "https://esm.sh/@wharfkit/session@1.6.1?external=@wharfkit/antelope,@wharfkit/common",
+        "@wharfkit/web-renderer": "https://esm.sh/@wharfkit/web-renderer@1.4.3?external=@wharfkit/antelope,@wharfkit/common,@wharfkit/session",
+        "@wharfkit/wallet-plugin-anchor": "https://esm.sh/@wharfkit/wallet-plugin-anchor@1.7.2?external=@wharfkit/antelope,@wharfkit/common,@wharfkit/session",
+        "@wharfkit/wallet-plugin-cloudwallet": "https://esm.sh/@wharfkit/wallet-plugin-cloudwallet@1.6.5?external=@wharfkit/antelope,@wharfkit/common,@wharfkit/session"
+      }
+    }
+    </script>
+</head>
+<body>
+    <div class="ground" aria-hidden="true"></div>
+
+    <div class="app">
+        <header class="head">
+            <h1>DAO Master</h1>
+
+            <!--
+              Connected, this button is how you check who you are - so it must not
+              also be how you stop being them. One misplaced click on a control
+              people press to READ something and the session is gone. It opens a
+              menu instead, and leaving is a deliberate second choice inside it.
+            -->
+            <div class="wallet" id="wallet">
+                <span class="wallet-note" id="walletNote" hidden></span>
+                <button class="btn btn-ghost" id="refreshBtn" type="button"
+                        title="Re-read everything from the chain">Refresh</button>
+                <span class="tlm" id="tlm" hidden></span>
+                <button class="btn" id="connectWalletBtn" type="button"
+                        aria-haspopup="menu" aria-expanded="false">
+                    <span class="btn-label">Connect Wallet</span>
+                </button>
+
+                <div class="wallet-menu" id="walletMenu" role="menu" hidden>
+                    <div class="wallet-who">
+                        <span class="wallet-kicker">Signed in as</span>
+                        <b id="walletWho"></b>
+                    </div>
+                    <button class="wallet-item" id="logoutBtn" role="menuitem" type="button">
+                        Log out
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <div class="switch" role="tablist" aria-label="DAO type">
+            <button class="switch-btn is-on" id="tabSyndicates" role="tab" aria-selected="true" type="button">
+                Syndicates <span class="count" id="countSyndicates"></span>
+            </button>
+            <button class="switch-btn" id="tabUnions" role="tab" aria-selected="false" type="button">
+                Unions <span class="count" id="countUnions"></span>
+            </button>
+        </div>
+
+        <!--
+          Only enabled once a vote row has been read for EVERY DAO in the group.
+          Re-casting a partial slate would silently drop the DAOs whose votes
+          could not be read, so a missing read has to disable it rather than
+          shrink it.
+        -->
+        <button class="btn btn-ghost refresh-votes" id="refreshVotesBtn" type="button" hidden></button>
+
+        <main class="daos" id="daos" role="tabpanel"></main>
+
+        <!-- Kept, but silent unless something actually went wrong. A running
+             commentary on how many nodes answered is not news; a failed read is,
+             and it still needs somewhere to appear. -->
+        <p class="status" id="status" hidden></p>
+        <div class="progress" id="progress" role="progressbar" hidden>
+            <span id="progressFill"></span>
+        </div>
+    </div>
+
+    <!--
+      Selecting a DAO opens this and leaves it open, so the grid behind stays
+      browsable and picking another card just swaps the contents. Contents are
+      rendered from JS; the shell is here so its transition has something stable
+      to animate.
+    -->
+    <!--
+      Actions open here, on top of the grid, rather than sliding a permanent rail
+      in from the edge. You pick what you want to do first and only then see that
+      action's fields, so six forms are never on screen at once.
+    -->
+    <div class="modal" id="panel" aria-label="DAO actions" role="dialog" aria-modal="true" hidden>
+        <div class="modal-box" id="panelInner"></div>
+    </div>
+
+    <!-- Candidates run to dozens and proposals carry paragraphs; neither fits
+         the 390px panel, so the detail gets the whole page. -->
+    <div class="details" id="details" hidden></div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

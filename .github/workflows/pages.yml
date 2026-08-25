@@ -1,0 +1,49 @@
+name: Deploy DAO Master to Pages
+
+# Pages can only serve a repo's root or its /docs folder, and the site lives in
+# website/. Publishing through Actions keeps the folder named for what it holds
+# instead of renaming it to satisfy the host.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and let a newer push win rather than queue behind an
+# older one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # No build step: the site is plain HTML, CSS and one ES module. WharfKit
+      # is pulled from esm.sh at runtime through the import map, so there is
+      # nothing to bundle or install.
+      # enablement: true so a fresh repo turns Pages on itself. Without it the
+      # very first run races repo creation and fails with "Get Pages site
+      # failed".
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

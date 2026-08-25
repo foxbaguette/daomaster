@@ -1,0 +1,1107 @@
+/* ==========================================================================
+   DAO Master — every Alien Worlds DAO and who sits on its council.
+
+   The page has one job, so it has one accent. Gold marks a seat and the group
+   currently being shown; everything else is a grey line on a near-black ground.
+   ========================================================================== */
+
+:root {
+    --void:        #05060d;
+    --panel:       rgba(15, 17, 32, .62);
+    --panel-solid: #0c0e1a;
+    --panel-in:    rgba(6, 7, 14, .5);
+
+    --line:      rgba(150, 160, 210, .16);
+    --line-soft: rgba(150, 160, 210, .08);
+
+    --text:       #e7e9f7;
+    --text-muted: #8e93b4;
+    --text-faint: #5b5f7d;
+
+    --gold:      #f2b73c;
+    --gold-hot:  #ffdc94;
+    --gold-soft: rgba(242, 183, 60, .10);
+    --gold-glow: rgba(242, 183, 60, .28);
+
+    /* The watched accounts. A second voice, used for nothing else on the page,
+       so a blue name anywhere means one of that list and a blue marker means
+       enough of them at one table. */
+    --blue:      #4da3ff;
+    --blue-hot:  #93c6ff;
+    --blue-soft: rgba(77, 163, 255, .11);
+    --blue-glow: rgba(77, 163, 255, .45);
+
+    --danger: #ff5a6e;
+    --ok:     #4ad6a0;
+
+    --font: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: 'Share Tech Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
+    /* One cut corner, top-left. A machined part, not a rounded box. */
+    --cut:    polygon(14px 0, 100% 0, 100% 100%, 0 100%, 0 14px);
+    --cut-sm: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* `hidden` is only `display: none` in the UA stylesheet, so ANY author rule that
+   sets `display` silently defeats it. `.modal` is `display: grid`, which meant
+   the actions overlay painted over the page from load — scrim and all — while
+   `el.hidden` still read `true`, so every close path that tests it concluded the
+   overlay was already shut. Enforce it globally, not per component. */
+[hidden] { display: none !important; }
+
+html, body {
+    min-height: 100%;
+    background: var(--void);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+}
+
+.ground {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse 90% 60% at 50% -10%, #141733 0%, #05060d 62%);
+}
+
+.app {
+    position: relative;
+    z-index: 1;
+    /* Three cards across, each now carrying a council and a holdings column
+       side by side, need more room than the single-column cards did. */
+    max-width: 1340px;
+    margin: 0 auto;
+    padding: 44px 26px 64px;
+}
+
+/* ── Head ────────────────────────────────────────────────────────────────── */
+
+.head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin-bottom: 26px;
+}
+
+.head h1 {
+    font-size: 25px;
+    font-weight: 600;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    line-height: 1.1;
+}
+
+.sub {
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: .03em;
+    margin-top: 5px;
+}
+
+/* ── Wallet ──────────────────────────────────────────────────────────────── */
+
+.wallet {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    /* The h1 has a little optical lead-in above it; this lines the button up
+       with the title rather than with the top of its box. */
+    margin-top: 2px;
+}
+
+.btn {
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--gold);
+    background: var(--gold-soft);
+    border: 1px solid rgba(242, 183, 60, .34);
+    padding: 10px 17px;
+    cursor: pointer;
+    clip-path: var(--cut-sm);
+    transition: background .15s, color .15s;
+}
+.btn:hover:not(:disabled) { background: rgba(242, 183, 60, .19); color: var(--gold-hot); }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* Connected, the button is a readout of who you are, not a call to action — so
+   it drops the gold and the shouting and just states the account. */
+.btn.is-connected {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text);
+    background: var(--panel);
+    border-color: var(--line);
+}
+.btn.is-connected:hover { background: rgba(150, 160, 210, .10); color: var(--text); }
+
+/* Trilium, beside the account. Gold would read as authority and blue as a
+   watched account, so it stays neutral — it is a balance, not a status. */
+.tlm {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text);
+    padding: 9px 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    clip-path: var(--cut-sm);
+    white-space: nowrap;
+    cursor: help;
+}
+
+.wallet-note {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    max-width: 24ch;
+    text-align: right;
+}
+
+.wallet-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 5;
+    min-width: 190px;
+    background: var(--panel-solid);
+    border: 1px solid var(--line);
+    clip-path: var(--cut-sm);
+}
+
+.wallet-who {
+    padding: 11px 14px 9px;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.wallet-kicker {
+    display: block;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+
+.wallet-who b {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 400;
+    color: var(--text);
+    margin-top: 3px;
+    word-break: break-all;
+}
+
+.wallet-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font-family: var(--font);
+    font-size: 12px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    padding: 11px 14px;
+    cursor: pointer;
+    transition: color .12s, background .12s;
+}
+.wallet-item:hover { color: var(--gold); background: var(--gold-soft); }
+
+/* ── Switch ──────────────────────────────────────────────────────────────── */
+
+.switch {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    clip-path: var(--cut-sm);
+    margin-bottom: 26px;
+}
+
+.switch-btn {
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    border-right: 1px solid var(--line-soft);
+    padding: 11px 20px;
+    cursor: pointer;
+    transition: color .15s, background .15s;
+}
+.switch-btn:last-child { border-right: 0; }
+.switch-btn:hover { color: var(--text); }
+.switch-btn.is-on { color: var(--gold); background: var(--gold-soft); }
+
+/* The tally is a detail of the label, not a second label. */
+.count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-left: 5px;
+}
+.switch-btn.is-on .count { color: var(--gold); opacity: .7; }
+
+/* ── DAOs ────────────────────────────────────────────────────────────────── */
+
+/* Three across. minmax(0, …) rather than 1fr alone, or a long account name in
+   the council would force a track wider than its share and break the thirds. */
+/* `stretch`, not `start`: cards in a row match each other, so one DAO gaining a
+   row of holdings cannot make its neighbours look truncated. The holdings column
+   is kept short enough that the council decides the height anyway — this is the
+   backstop for when it is not. */
+.daos {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    align-items: stretch;
+}
+
+/* Dropping to one column early on purpose: a card carries a council and a
+   holdings column side by side, and two of those below ~780px leaves the names
+   too narrow to read. */
+@media (max-width: 1000px) { .daos { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 780px)  { .daos { grid-template-columns: minmax(0, 1fr); } }
+
+.dao {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    clip-path: var(--cut);
+    padding: 18px 18px 8px;
+}
+
+.dao { position: relative; }
+
+/* The card whose panel is open. Gold would read as authority, so the selected
+   card is marked by a brighter edge rather than by a colour that means
+   something else here. */
+.dao.is-selected {
+    border-color: rgba(150, 160, 210, .45);
+    background: rgba(23, 26, 46, .72);
+}
+
+.dao h2 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    line-height: 1.2;
+}
+
+.dao-id {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    /* The MC chip is taller than bare text, so without a floor here a marked
+       card sits a pixel below an unmarked one. */
+    min-height: 18px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 3px;
+}
+
+.mc {
+    font-family: var(--font);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    color: var(--blue);
+    background: var(--blue-soft);
+    border: 1px solid rgba(77, 163, 255, .32);
+    padding: 2px 6px;
+    cursor: help;
+}
+
+/* Council on the left, holdings on the right. */
+.dao-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-top: 13px;
+}
+
+.dao-body .council { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+
+/* What the signed-in account holds here. Deliberately not a new colour: gold is
+   a seat and blue is a watched account, and this is neither. It is set apart by
+   sitting in its own recessed column instead, with the figures brighter than
+   their labels. */
+.mine {
+    flex: 0 0 auto;
+    width: 132px;
+    /* Trimmed so four rows land just inside a five-seat council. Past that the
+       holdings column starts setting the card height and cards stop matching. */
+    padding: 6px 11px;
+    background: var(--panel-in);
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid rgba(150, 160, 210, .32);
+}
+
+/* Stacked, not a row: the column is too narrow to put a label and a figure on
+   one line without one of them wrapping. Spacing is tight on purpose — four of
+   these have to fit inside the height of a five-seat council, or the holdings
+   column starts deciding how tall the card is. */
+.mine > div + div {
+    margin-top: 5px;
+    padding-top: 5px;
+    border-top: 1px solid var(--line-soft);
+}
+.mine > div[title] { cursor: help; }
+
+.mine dt {
+    font-size: 9.5px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    white-space: nowrap;
+}
+
+.mine dd {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.25;
+    color: var(--text);
+    margin-top: 2px;
+}
+
+/* The release estimate is a qualifier on the amount, not a second figure. It
+   stays on the same line: dropping it below added a fifth line's worth of height
+   to any card with an unstake, which is exactly what made those cards taller
+   than the rest. */
+.mine dd i {
+    font-style: normal;
+    font-size: 10.5px;
+    color: var(--text-faint);
+    margin-left: 5px;
+    white-space: nowrap;
+}
+.mine dd i.is-ready { color: var(--gold); }
+
+.council {
+    list-style: none;
+    margin-top: 13px;
+    border-top: 1px solid var(--line-soft);
+}
+
+.council li { border-bottom: 1px solid var(--line-soft); }
+.council li:last-child { border-bottom: 0; }
+
+.council a {
+    display: block;
+    padding: 9px 2px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: var(--text);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color .12s;
+}
+.council a:hover { color: var(--gold-hot); }
+
+.council a.is-watched { color: var(--blue); }
+.council a.is-watched:hover { color: var(--blue-hot); }
+
+/* A seat is gold, so the marker that a row is one lives here rather than on the
+   text — the names stay plain and the column still reads as a council. */
+.council a::before {
+    content: '';
+    display: inline-block;
+    width: 4px; height: 4px;
+    margin-right: 9px;
+    vertical-align: middle;
+    background: var(--gold);
+    box-shadow: 0 0 6px var(--gold-glow);
+}
+
+/* The dot carries the highlight too, so a watched seat is still legible to
+   anyone who cannot separate the two hues. */
+.council a.is-watched::before {
+    background: var(--blue);
+    box-shadow: 0 0 6px var(--blue-glow);
+}
+
+.council .none {
+    padding: 12px 2px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text-faint);
+}
+
+/* ── Panel ───────────────────────────────────────────────────────────────── */
+
+/* Deliberately without a backdrop: it stays open while the grid behind is
+   browsed, and clicking another card swaps its contents. A modal scrim would
+   fight that. */
+/* Centred over the grid, not a rail sliding in from the edge. Actions are a
+   deliberate errand, so they get a deliberate surface and a scrim. */
+.modal {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(2, 3, 8, .72);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.modal-box {
+    width: 100%;
+    max-width: 440px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    background: var(--panel-solid);
+    border: 1px solid var(--line);
+    clip-path: var(--cut);
+    padding: 20px 20px 24px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .6);
+}
+
+.panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.panel-head h2 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    line-height: 1.15;
+}
+
+.panel-sub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 3px;
+}
+
+.panel-close {
+    font-family: var(--font);
+    font-size: 22px;
+    line-height: 1;
+    color: var(--text-faint);
+    background: transparent;
+    border: 1px solid var(--line-soft);
+    padding: 3px 9px 5px;
+    cursor: pointer;
+    flex: none;
+    transition: color .12s, border-color .12s;
+}
+.panel-close:hover { color: var(--text); border-color: var(--line); }
+
+.panel-pos { padding: 14px 0; }
+
+.panel-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 6px 0;
+}
+.panel-row + .panel-row { border-top: 1px solid var(--line-soft); }
+.panel-row[title] { cursor: help; }
+
+.panel-k {
+    flex: 1;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+
+.panel-v {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--text);
+    text-align: right;
+}
+.panel-v i { font-style: normal; font-size: 11px; color: var(--text-faint); margin-left: 7px; }
+.panel-v i.is-ready { color: var(--gold); }
+
+/* The cancel button rides on the right of its own unstaking row. */
+.panel-row.is-unstake .panel-v { flex: none; }
+.panel-row.is-unstake { flex-wrap: wrap; }
+
+.panel-empty {
+    padding: 16px 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text-faint);
+}
+
+.panel-note {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    padding: 9px 11px;
+    margin-bottom: 14px;
+    background: var(--panel-in);
+    border-left: 2px solid var(--line);
+    word-break: break-word;
+}
+.panel-note.is-work  { border-left-color: var(--gold); color: var(--gold); }
+.panel-note.is-ok    { border-left-color: var(--ok); color: var(--ok); }
+.panel-note.is-error { border-left-color: var(--danger); color: var(--danger); }
+
+/* ── Action forms ────────────────────────────────────────────────────────── */
+
+.act { padding: 13px 0; border-top: 1px solid var(--line-soft); }
+
+.act-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.act-label {
+    font-size: 11px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--text);
+}
+
+.act-hint {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-faint);
+    text-align: right;
+}
+
+.act-row { display: flex; align-items: stretch; gap: 6px; }
+
+.act-row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--panel-in);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 8px 10px;
+}
+.act-row input:focus { outline: none; border-color: rgba(242, 183, 60, .40); }
+.act-row input:disabled { opacity: .45; }
+
+.act-unit {
+    display: flex;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    padding: 0 2px;
+}
+
+.act-max, .act-mini {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 0 8px;
+    cursor: pointer;
+    transition: color .12s, border-color .12s;
+}
+.act-max:hover:not(:disabled), .act-mini:hover:not(:disabled) {
+    color: var(--gold);
+    border-color: rgba(242, 183, 60, .40);
+}
+.act-max:disabled { opacity: .4; cursor: default; }
+
+.act-mini { padding: 3px 8px; flex: none; }
+
+.act-go {
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--gold);
+    background: var(--gold-soft);
+    border: 1px solid rgba(242, 183, 60, .34);
+    padding: 8px 14px;
+    cursor: pointer;
+    flex: none;
+    transition: background .15s, color .15s;
+}
+.act-go:hover:not(:disabled) { background: rgba(242, 183, 60, .19); color: var(--gold-hot); }
+.act-go:disabled { opacity: .38; cursor: default; }
+.act-go.is-wide { width: 100%; }
+
+.btn-ghost {
+    color: var(--text-muted);
+    background: var(--panel);
+    border-color: var(--line);
+}
+.btn-ghost:hover:not(:disabled) { background: rgba(150, 160, 210, .10); color: var(--text); }
+
+/* ── Details view ────────────────────────────────────────────────────────── */
+
+/* Covers the page rather than sitting beside it: candidate and proposal tables
+   want the full width, and the grid behind is not useful while reading one. */
+.details {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    overflow-y: auto;
+    background: var(--void);
+}
+
+body.is-details, body.is-modal { overflow: hidden; }
+
+.d-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 34px 26px 80px;
+}
+
+.d-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+    padding-bottom: 18px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+}
+
+.d-head h2 {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    line-height: 1.1;
+}
+
+.d-block { padding: 22px 0; border-bottom: 1px solid var(--line-soft); }
+
+.d-block h3 {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--text);
+    margin-bottom: 12px;
+}
+
+.d-dim {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-faint);
+    margin-left: 8px;
+}
+
+.d-line { font-size: 13px; line-height: 1.6; margin-bottom: 12px; }
+.d-line b { font-family: var(--mono); font-weight: 400; color: var(--text); }
+
+/* Wide tables scroll inside their own box; the page itself never does. */
+.d-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+
+.d-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.d-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    text-align: left;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    background: var(--void);
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+}
+
+.d-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+}
+
+.d-table td.num, .d-table th.num { text-align: right; font-family: var(--mono); }
+.d-table tbody tr:hover { background: rgba(150, 160, 210, .05); }
+.d-table tr.is-picked { background: var(--gold-soft); }
+
+.d-table a {
+    font-family: var(--mono);
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+}
+.d-table a:hover { color: var(--gold-hot); }
+.d-table a.is-watched { color: var(--blue); }
+.d-table a.is-watched:hover { color: var(--blue-hot); }
+
+.d-table b { font-weight: 500; display: block; }
+.d-table td .d-dim { display: block; margin: 2px 0 0; }
+
+.d-table input[type="checkbox"] {
+    accent-color: var(--gold);
+    width: 14px; height: 14px;
+    cursor: pointer;
+}
+
+.pill {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.pill.is-completed   { color: var(--ok); border-color: rgba(74, 214, 160, .35); }
+.pill.is-apprvtes,
+.pill.is-apprfinvtes { color: var(--gold); border-color: rgba(242, 183, 60, .38); }
+.pill.is-expired,
+.pill.is-blocked,
+.pill.is-indispute   { color: var(--danger); border-color: rgba(255, 90, 110, .35); }
+
+/* A two-state slider. The labels either side carry the meaning; the track is
+   just the control. */
+.d-filter {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    font-size: 11px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+.d-filter span.is-on { color: var(--gold); }
+
+.toggle {
+    width: 40px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--line);
+    background: var(--panel-in);
+    border-radius: 10px;
+    cursor: pointer;
+    position: relative;
+    flex: none;
+}
+
+.toggle i {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--gold);
+    box-shadow: 0 0 7px var(--gold-glow);
+    transition: transform .16s ease-out;
+}
+.toggle.is-right i { transform: translateX(20px); }
+
+@media (prefers-reduced-motion: reduce) {
+    .toggle i { transition: none; }
+}
+
+.d-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.panel-head-btns { display: flex; align-items: center; gap: 6px; flex: none; }
+
+/* ── Action chooser ──────────────────────────────────────────────────────── */
+
+/* Six forms at once was the thing that felt overwhelming. Pick the errand, then
+   see only its fields. */
+.act-menu { display: grid; gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
+
+.act-pick {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: var(--panel-solid);
+    border: 0;
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: background .12s;
+}
+.act-pick:hover { background: rgba(242, 183, 60, .07); }
+
+.act-pick-label {
+    display: block;
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    color: var(--text);
+}
+
+.act-pick-blurb {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 3px;
+}
+
+/* Still listed when it cannot run: knowing an action exists and why it is
+   unavailable beats it vanishing without explanation. */
+.act-pick.is-off .act-pick-label { color: var(--text-faint); }
+.act-pick.is-off .act-pick-blurb { color: var(--text-faint); opacity: .75; }
+
+.act-back {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    padding: 0 0 12px;
+    cursor: pointer;
+}
+.act-back:hover { color: var(--gold); }
+
+.act-chosen h3 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    color: var(--text);
+}
+
+.act-blurb, .act-hint-line {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-faint);
+    margin-top: 4px;
+    line-height: 1.5;
+}
+.act-hint-line { color: var(--text-muted); margin-bottom: 12px; }
+.act-blurb + .act-hint-line { margin-top: 6px; }
+.act-chosen { margin-bottom: 12px; }
+
+.act-blocked {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--danger);
+    margin-top: 10px;
+}
+
+/* ── Card buttons and clock ──────────────────────────────────────────────── */
+
+.dao-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+
+/* The election clock. Gold because a period boundary is when authority actually
+   changes hands — the same thing every seat on this page is about. */
+.election {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--gold);
+    background: var(--gold-soft);
+    border: 1px solid rgba(242, 183, 60, .28);
+    padding: 2px 7px;
+    white-space: nowrap;
+    flex: none;
+    cursor: help;
+}
+.election.is-soon { color: var(--gold-hot); border-color: rgba(242, 183, 60, .55); }
+.election.is-pending { color: var(--text-faint); background: transparent; border-color: var(--line-soft); }
+
+.dao-btns {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line-soft);
+}
+
+.card-btn {
+    flex: 1;
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: color .13s, background .13s, border-color .13s;
+}
+.card-btn:hover { color: var(--text); background: rgba(150, 160, 210, .08); }
+.card-btn.is-primary { color: var(--gold); border-color: rgba(242, 183, 60, .30); background: var(--gold-soft); }
+.card-btn.is-primary:hover { color: var(--gold-hot); background: rgba(242, 183, 60, .18); }
+
+.d-title { flex: 1; }
+
+.d-clock { text-align: right; flex: none; }
+.d-clock-k {
+    display: block;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 4px;
+}
+
+.d-switch { margin: 18px 0 4px; }
+
+/* ── Propose a period ────────────────────────────────────────────────────── */
+
+.d-propose { margin-bottom: 16px; }
+.d-propose > .card-btn { flex: none; padding: 9px 16px; }
+
+.d-propose-form {
+    padding: 14px 16px;
+    background: var(--panel-in);
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid rgba(242, 183, 60, .45);
+}
+
+.slider-row { display: flex; align-items: center; gap: 14px; margin: 12px 0 10px; }
+
+.slider-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--gold);
+    height: 4px;
+    cursor: pointer;
+}
+
+.slider-row output {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--gold);
+    min-width: 8ch;
+    text-align: right;
+}
+
+.d-propose-form .act-blurb code {
+    font-family: var(--mono);
+    color: var(--text-muted);
+}
+
+/* ── At risk ─────────────────────────────────────────────────────────────── */
+
+/* Red is otherwise only used for failures, which is the right register: a seated
+   custodian below the cut line is a warning about this DAO, not a property of
+   the account. It is a snapshot — the ranking moves whenever anyone votes — so
+   the label says "at risk", not "out". */
+.risk {
+    font-size: 9.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--danger);
+    border: 1px solid rgba(255, 90, 110, .34);
+    background: rgba(255, 90, 110, .10);
+    padding: 1px 5px;
+    margin-left: 7px;
+    white-space: nowrap;
+    cursor: help;
+}
+
+.council li.is-risk a::before { background: var(--danger); box-shadow: 0 0 6px rgba(255, 90, 110, .45); }
+.council li.is-risk { display: flex; align-items: center; }
+.council li.is-risk a { flex: 0 1 auto; }
+
+.d-table tr.is-risk td { background: rgba(255, 90, 110, .06); }
+
+/* The other side of the same fact: a candidate ranked inside the seat count who
+   does not hold one yet. */
+.incoming {
+    font-size: 9.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ok);
+    border: 1px solid rgba(74, 214, 160, .34);
+    background: rgba(74, 214, 160, .10);
+    padding: 1px 5px;
+    margin-left: 7px;
+    white-space: nowrap;
+    cursor: help;
+}
+
+/* ── Vote age ────────────────────────────────────────────────────────────── */
+
+/* Sits inline with the id now that the election clock has the title line. */
+.vote-age {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-faint);
+    border: 1px solid var(--line-soft);
+    background: var(--panel-in);
+    padding: 1px 6px;
+    cursor: help;
+}
+
+.refresh-votes { margin: 0 0 26px 10px; vertical-align: top; }
+
+/* ── Status / foot ───────────────────────────────────────────────────────── */
+
+.status {
+    margin-top: 26px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-faint);
+}
+.status.is-error { color: var(--danger); }
+
+/* Reads are paced across the node pool, so a full load is seconds rather than
+   milliseconds. The bar is the only thing on the page that moves. */
+.progress {
+    margin-top: 8px;
+    height: 2px;
+    background: var(--line-soft);
+    overflow: hidden;
+}
+
+.progress span {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--gold-soft), var(--gold));
+    box-shadow: 0 0 8px var(--gold-glow);
+    transition: width .25s ease-out;
+}
+
+.foot {
+    margin-top: 30px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line-soft);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-faint);
+    max-width: 78ch;
+}
+.foot a { color: var(--text-muted); text-decoration: none; border-bottom: 1px dotted var(--line); }
+.foot a:hover { color: var(--gold); }

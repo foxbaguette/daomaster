@@ -1,0 +1,4 @@
+# Local scratch only; nothing here is part of the site.
+*.log
+.DS_Store
+Thumbs.db

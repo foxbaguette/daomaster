@@ -1,0 +1,419 @@
+# DAO Master
+
+A front end for the [Alien Worlds](https://github.com/Alien-Worlds) DAO contracts
+on WAX.
+
+**Stage 1** — every DAO and the custodians currently
+seated on it, with a switch between syndicates and unions, and — for whoever
+connects a wallet — what they hold in each.
+
+```
+website/index.html   markup
+website/app.js       chain reads and rendering
+website/styles.css   the look
+website/serve.ps1    local dev server
+```
+
+## Running it
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "website\serve.ps1"
+```
+
+then open <http://127.0.0.1:4440/>. It has to be served over `http://` — from
+`file://` the page's origin is `null` and every WAX node refuses the CORS
+preflight.
+
+No build step, no dependencies. `app.js` is a plain ES module.
+
+## Where the data comes from
+
+Two tables:
+
+| Read | Contract | Table | Scope |
+| --- | --- | --- | --- |
+| The directory | `index.worlds` | `dacs` | `index.worlds` |
+| The seated council | the DAO's custodian contract | `custodians1` | the DAO id |
+
+The custodian contract is **not** hardcoded. Each directory row carries an
+`accounts` map keyed by `dacdir::account_type`, and type `2` is `CUSTODIAN`.
+Today every DAO points at `dao.worlds`, but the directory is what decides that,
+so the page reads it per DAO instead of assuming.
+
+Each DAO's council lives in a scope named after its `dac_id` — `eyeke`,
+`velesunn`, `nerix` — which is why one deployed custodian contract can run
+all fourteen registered elections without them seeing each other. Twelve of
+those are shown on the page; see below.
+
+## Syndicates vs unions
+
+A DAO is a **union** if it has no `TREASURY` account (type `1`) in the directory,
+and a **syndicate** if it does. That is a real functional difference the
+contracts encode — syndicates hold a treasury, unions do not — rather than a
+naming convention, and it agrees exactly with the titles: the same six rows are
+the ones whose `title` ends in "Union".
+
+Splits 6 / 6.
+
+Test A and Test B are registered in the directory exactly like any other DAO —
+treasury, refs, a seated council — so nothing in the data marks them as scratch.
+They are hidden by the `HIDDEN` set in `app.js`, which is a curation choice and
+therefore a list of ids rather than a rule.
+
+## Connecting a wallet
+
+Optional, and top-right. [WharfKit](https://wharfkit.com) with the Anchor and
+Cloud Wallet plugins; WharfKit's own picker chooses between them. Nothing on the
+page is gated behind it and nothing signs a transaction yet — the session is
+here so the actions that will need one have it.
+
+WharfKit is ESM-only (no UMD build, no `window` global), which is why `app.js`
+loads as a module and the bare specifiers resolve through the import map in
+`index.html`. The `?external=` on each esm.sh URL keeps antelope/common/session
+as a **single shared instance** — duplicate copies break `instanceof` checks at
+runtime.
+
+Signing follows reads: whichever node the probe settles on is pushed into the
+kit with `setEndpoint`, so the wallet is not talking to some other node than the
+page is.
+
+Connected, the button shows the account. It opens a menu rather than logging
+out on click — it is the control you press to check *who you are*, and one
+misplaced click should not end the session. Logging out is a deliberate second
+choice inside the menu, which also closes on outside-click and on Escape. A
+stored session is restored on load in parallel with the DAO reads, so the page
+never waits behind a wallet.
+
+## Your holdings
+
+Signed in, each DAO card gains a block for whatever the connected account holds
+there — owned, staked, stake time, and any unstake in flight. **Every line is
+dropped when it would read as a zero**, so a DAO you have nothing in shows
+nothing at all, and the block disappears entirely rather than printing four
+empty rows.
+
+All four live on the DAO's own token contract, and — this is the trap — they are
+scoped by **`dac_id`**, not by the token symbol:
+
+| Table | Scope | Keyed by |
+| --- | --- | --- |
+| `accounts` | the holder | symbol |
+| `stakes` | `dac_id` | account |
+| `staketime` | `dac_id` | account |
+| `unstakes` | `dac_id` | auto-id, plus a `byaccount` secondary index |
+| `stakeconfig` | `dac_id` | singleton |
+
+`get_table_by_scope` reports **zero scopes** for `stakes`, `unstakes`,
+`staketime` and `stakeconfig` on `token.worlds`, which makes it look like DAO
+token staking is unused. It is not — direct reads at `scope = dac_id` return
+data. Do not conclude from the scope index that these tables are empty.
+
+Two details that are easy to get wrong:
+
+- **`unstakes` is keyed by an auto-incrementing id**, so one account's releases
+  come from the `byaccount` secondary index — `index_position: 2`,
+  `key_type: 'name'`, bounded to the actor. A primary-key read would need a full
+  table scan.
+- **`staketime` has no row until a delay is explicitly set**, and the contract
+  then falls back to `stakeconfig.min_stake_time`. A missing row means *the
+  minimum*, not zero. The page reads `stakeconfig` for exactly those DAOs — a
+  stake with no delay row — and labels the value as the minimum in its tooltip.
+
+Balances are one read per token contract, not one per DAO, since a holder's
+`accounts` scope carries every symbol at once. The rest is three bounded reads
+per DAO, run at the same concurrency as the councils.
+
+Figures are shown per line and never summed. Whether an unstaking amount is
+already reflected in the liquid balance is a contract detail this page does not
+assert, so it prints what each table says and leaves it there.
+
+Amounts are **truncated to whole tokens** — the fractional part is dropped, not
+rounded — and the symbol is dropped with it, since the card a figure sits in is
+already the DAO whose token it is. Each row carries the exact asset string in its
+tooltip, so nothing is unrecoverable.
+
+### Pacing, and why it is a correctness measure
+
+Reads are spread across **every** healthy node, and no single node is asked for
+more than three calls in any rolling three seconds.
+
+That is not politeness. Leaning on one node does not reliably produce an HTTP
+429 — it produces an empty `rows` array, which is **indistinguishable from
+"nothing staked"** and renders as a holder having nothing at all. A silently
+wrong page is worse than a slow one. This was not theoretical: during
+development `wax.eosdac.io` returned empty for bounded `stakes` reads that four
+other nodes answered correctly.
+
+`acquireNode()` hands out the least-loaded node with room left in its window and
+waits when every node is spent, so the aggregate rate is simply how many nodes
+are up (ten nodes gives about ten reads a second). A failed read is retried on a
+*different* node, up to `MAX_ATTEMPTS`.
+
+Each node opens its window already holding its probe. The probe deliberately
+bypasses the scheduler — it is one call to one named node, which is the whole
+point of a probe — but it is still a call that node just served, so starting its
+budget at zero would let the first burst put four on it inside the window.
+
+A full signed-in load is around fifty paced reads, which takes seconds rather
+than milliseconds, so there is a progress bar under the status line. It counts
+requests, the same unit the scheduler meters.
+
+## Acting on a DAO
+
+Selecting a card opens a side panel that stays open while the grid behind stays
+browsable — picking another card swaps its contents. Every action below signs;
+each shape was read off the contracts **and** confirmed against a live mainnet
+trace before being wired up.
+
+| Action | Call | Input |
+| --- | --- | --- |
+| Stake | `token.worlds::stake(account, quantity)` | amount, up to what is free |
+| Unstake | `token.worlds::unstake(account, quantity)` | amount, up to what is staked |
+| Claim | `token.worlds::claimunstkes(account, token_symbol)` | none |
+| Cancel | `token.worlds::cancel(unstake_id, token_symbol)` | the row's id |
+| TLM to token | `alien.worlds::transfer` + `stake.worlds::stake` | TLM amount |
+| Token to TLM | `token.worlds::transfer` to `stake.worlds` | token amount |
+
+Things that are not obvious from the ABI:
+
+- **`claimunstkes` moves no tokens.** It calls `get_liquid` purely for the side
+  effect of erasing expired rows. The tokens never left the balance — the
+  unstake row was only suppressing the liquid figure. That is why an account can
+  show the same amount as both *not staked* and *claimable*.
+- **Stake time can only be increased**, never reduced, while anything is staked
+  or unstaking. Bounds come from that DAO's `stakeconfig`.
+- **`planet_name` is not uniform.** Syndicates are addressed by their planet
+  account (`eyeke.world`, from `plnts.worlds/planets`, matched on
+  `dac_symbol`); unions by their `dac_id` (`kavianunn`, from
+  `stake.worlds/stakedaos`). Both branches were confirmed on chain.
+- **The TLM swap is one transaction of two actions.** The transfer alone would
+  park TLM on `stake.worlds` with nothing to claim it.
+- **Union tokens are `transfer_locked`.** They can only go back to
+  `stake.worlds`, never to another account.
+- **Amounts are truncated, never rounded**, when converted to the fixed-point
+  string the chain wants — rounding up could ask to move more than is held.
+
+After a transaction lands the page waits one block-ish and re-reads the
+position, because an accepted transaction is not yet a readable row.
+
+## The card, and getting from it to anything else
+
+Each card carries its own **Details** and **Actions** buttons. The card itself is
+not a control — it used to be, and a stray click anywhere on a name or a figure
+slid a rail in from the edge of the page.
+
+**Actions** opens a centred overlay that asks *which* action first and only then
+shows that action's fields. Six forms stacked on one rail was the thing that felt
+overwhelming. Actions that cannot run are still listed, greyed, with the reason
+in place of the description — knowing an action exists and why it is unavailable
+beats it silently vanishing.
+
+**Details** opens the full page, which is itself split by a switch: the council
+with its candidates, or the proposals. Both at once is a wall.
+
+### The election clock
+
+`lastperiodtime + periodlength`, from `dacglobals`, counted down beside the DAO
+name. `newperiod` is permissionless but somebody still has to send it, so a due
+date in the past means nobody has — that reads **pending** rather than counting
+upward.
+
+Seconds only appear inside the last hour. Above that they change nothing a reader
+cares about and make every card twitch once a second. One interval repaints only
+the clock text, never the card: a full re-render each second would throw away
+scroll position, checkbox state and any half-typed amount.
+
+### Pre-selected candidates
+
+Opening a DAO's details seeds the candidate checkboxes with the slate already
+cast, read from `votes`. Re-casting it unchanged is exactly a vote refresh;
+changing one box is an edit. Starting from an empty list would mean
+reconstructing your own vote from memory before you could adjust it.
+
+## Proposing a new election period
+
+A seated custodian gets a **Propose a new election period** button in the
+proposals section, with a slider.
+
+`dao.worlds::setperiodlen(periodlength, dac_id)` runs under `require_auth(dac.owner)`
+— the DAO's owner account, *not* a custodian's. So a custodian cannot send it at
+all. It has to be raised as a multisig proposal that the council then approves
+and someone executes, which is exactly what the button builds.
+
+Slider bounds are the contract's own checks from `config.cpp`:
+
+| Check | Value |
+| --- | --- |
+| `periodlength >= days` | 1 day |
+| `periodlength <= 6 * months` | 180 days (a month is 30 days there) |
+| `periodlength >= pending_period_delay` | 0 on every DAO today, so no extra floor |
+
+The proposal is built from the shape three live proposals actually use:
+
+```
+msig.worlds::propose(
+  proposer      = the custodian, who signs
+  requested     = [ <dao.owner>@active ]
+  metadata      = [ title, description ]
+  trx.actions   = [ setperiodlen, authorized by <dao.owner>@active ]
+)
+```
+
+**`ref_block_num` and `ref_block_prefix` are zero**, matching every live
+proposal — `msig.worlds` dispatches the inner actions itself, so the proposed
+transaction is never TAPOS-checked. Expiry is seven days, the same window this
+DAO's own proposals use.
+
+The description reads exactly `Change the election period for Kavian from 180
+days to 14 days` and stops there. Custodians read it in a voting UI; the seconds,
+the contract name and who raised it are all recoverable from the transaction
+itself and only get in the way.
+
+**The inner action has to be serialized in the browser.** The msig ABI types it
+as `bytes`, and `abi_json_to_bin` — which used to do this server-side — now
+returns 404 or 410 on every endpoint in the list. `@wharfkit/antelope`'s
+`Serializer` does it against the ABI fetched from the chain.
+
+## At risk
+
+A seated custodian is marked **at risk** when they would not be re-seated if a
+period ran right now, and a standing candidate is marked **incoming** when they
+would take a seat.
+
+This is not a guess. `newperiod` walks the candidates table's `bydecayed` index
+— which sorts on `UINT64_MAX - rank`, so ascending on it is descending by rank —
+skips inactive candidates, requires `total_vote_power > 0`, and stops at
+`numelected`. The page reads the head of that same index and compares it to
+`custodians1`. `custodians1` holds exactly `numelected` rows once a period has
+run, so the seat count is the seated count and no `dacglobals` read is needed.
+
+Both reads are pinned to one node: split across a block boundary they can
+disagree and invent an at-risk seat that does not exist.
+
+The label is *at risk*, not *out* — the ranking moves every time anyone votes,
+and a period may be days away. Red is otherwise only used for failures, which is
+the right register: it is a warning about the DAO, not a property of the account.
+
+**Why this happens is worth understanding.** `rank` is
+`(log2(vote_power + 1) + avg_vote_time / SECONDS_TO_DOUBLE) * 10000` — the time
+term is linear while the power term is logarithmic, so vote *recency* routinely
+outweighs vote *size*. In Kavian right now `anyo.cabal` holds 57.41M vote power
+and is ranked below `.p2bu.wam` on 115.1K, because one was last voted 362 days
+ago and the other 32. That is also why refreshing a vote is worth doing at all.
+
+## Details, voting and proposals
+
+The panel's **details** button opens a full page for one DAO: its council, every
+standing candidate, your vote, and its proposals. Full page rather than more
+panel — candidates run to dozens and proposals carry paragraphs.
+
+### Voting
+
+`dao.worlds::votecust(voter, newvotes[], dac_id)`. Your slate lives in `votes`
+scoped by dac_id. **Refreshing a vote is re-casting the same slate**: it rewrites
+`vote_time_stamp`, which feeds each candidate's `avg_vote_time_stamp` and so
+their `rank`. The candidate list does not change — only its age.
+
+The group button above the grid does that for a whole tab in one transaction. It
+is **only enabled when a vote row was read for every DAO in the group**: a
+partial slate would silently leave out the DAOs whose votes could not be read,
+so a failed read disables the button rather than shrinking it.
+
+`maxvotes` is 2, enforced in the UI as well as the contract — better than a
+wallet prompt for a transaction that cannot succeed.
+
+### Proposals
+
+**`msig.worlds`**, scoped by dac_id. These are the multisig proposals every DAO
+actually runs, and there are thousands of them: eyeke 3028, magor 2012,
+nerix 1994, veles 1504, naron 1400, kavian 932.
+
+> **The trap.** `prop.worlds` is a *different* contract — worker proposals, and
+> only unions have ever used it (74 completed across all six). It is registered
+> at account type 6 for **every** DAO including syndicates, so "does this DAO
+> have a proposals contract" is true everywhere and tells you nothing. Reading
+> `prop.worlds` at a syndicate scope returns zero rows on every node. If the
+> proposals list looks empty, check which contract is being read.
+
+Reads are the **300 most recent, `reverse: true`** — one page, no paging. Open
+proposals are recent by nature, and paging eyeke's 3028 rows to fill a screen
+would be absurd.
+
+`state` is a bare `uint8` with no enum in the ABI. Derived from live data across
+three syndicates — 2585 of one value, 297 of another, 95 of a third:
+
+| Value | Meaning |
+| --- | --- |
+| `0` | open |
+| `1` | executed |
+| `2` | cancelled |
+
+**Expiry is not a field.** A msig proposal's only expiry is the one inside its
+packed transaction: the header begins with a little-endian `uint32` expiration,
+so it is the first four bytes of `packed_transaction`.
+
+**Active means open, and expiry is shown rather than filtered on.** Across all
+twelve DAOs exactly *one* open proposal is currently unexpired — filtering the
+expired ones out would leave the tab empty and looking broken, so they are listed
+with a red `expired` pill instead. They still cannot execute.
+
+| Action | Call | Who |
+| --- | --- | --- |
+| Approve | `msig.worlds::approve(proposal_name, level, dac_id)` | signs with the signer's own permission level; in practice a seated custodian |
+| Execute | `msig.worlds::exec(proposal_name, executer, dac_id)` | open, once the approvals satisfy the requested permission and the transaction has not expired |
+
+The approvals column is `provided_approvals` over `requested_approvals`, joined
+from the `approvals` table on `proposal_name`.
+
+## The watchlist
+
+`WATCHED` in `app.js` is a hand-supplied set of accounts. Any custodian in it is
+drawn in blue wherever it appears, and any DAO where they hold `CONTROL_THRESHOLD`
+seats or more gets an **MC controlled** marker. Both are edited in one place:
+
+```js
+const WATCHED = new Set(['5thba.wam', '42lra.wam', 't1dbe.wam', 'fgaqa.c.wam', 'im24u.c.wam'])
+const CONTROL_THRESHOLD = 3
+```
+
+Nothing on chain says these accounts are related — the marker means "this many
+of the watched accounts hold seats here" and nothing more. It carries the count
+it came from in its tooltip so the claim can be checked against the blue names
+directly underneath it.
+
+The rule runs over every DAO, so unions get the marker on the same terms as
+syndicates. At 3 of 5 the current list marks **Naron, Neri, Veles** and
+**Kavian Union, Neri Union, Veles Union**.
+
+Blue is used for nothing else on the page, so a blue name is always a watched
+account. The bullet beside each name is tinted along with the text, so the
+highlight does not rely on telling two hues apart.
+
+## Council order
+
+`custodians1` carries both `total_vote_power` and `rank`, and the contract seats
+candidates off its `bydecayed` index, which orders by `rank`:
+
+```
+rank = (log2(vote_power + 1) + avg_vote_time / SECONDS_TO_DOUBLE) * 10000
+```
+
+— an index blending how much support a candidate has with how recently it was
+given. It disagrees with raw vote power on most councils, so the page sorts by
+`rank`. Leaving the rows in the primary-key order the node returns would print a
+council in an order the chain does not use.
+
+## Notes
+
+- **`dac_state` is `0` on every row**, including the live planets, so it is not a
+  usable "active" flag and nothing on the page renders one.
+- **The endpoint list** is carried over from Very Serious Space War, where each
+  node was verified *from a browser* with the exact request this app makes.
+  Several nodes answer a `curl` GET fine and still fail the browser's OPTIONS
+  preflight; see the comment above `ENDPOINTS` before adding one.
+
+## Not here yet
+
+Login, and everything that needs it: voting, candidacy, proposals, the msig
+flow. Also pending custodians (`pendingcusts` — the council that takes over at
+the next period), full candidate lists, and proxies.
