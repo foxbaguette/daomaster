@@ -82,6 +82,14 @@
         -->
         <button class="btn btn-ghost refresh-votes" id="refreshVotesBtn" type="button" hidden></button>
 
+        <!--
+          Everything waiting on this account, gathered from every council it sits
+          on that the watched accounts also control. Beside the vote refresh
+          because both are account-scoped errands that span DAOs, rather than
+          anything to do with the tab you happen to be looking at.
+        -->
+        <button class="btn todo-btn" id="todoBtn" type="button" hidden>To do</button>
+
         <main class="daos" id="daos" role="tabpanel"></main>
 
         <!-- Kept, but silent unless something actually went wrong. A running
@@ -111,6 +119,9 @@
     <!-- Candidates run to dozens and proposals carry paragraphs; neither fits
          the 390px panel, so the detail gets the whole page. -->
     <div class="details" id="details" hidden></div>
+
+    <!-- Same full-page treatment for the to-do list, which spans DAOs. -->
+    <div class="details" id="todo" hidden></div>
 
     <script type="module" src="app.js"></script>
 </body>

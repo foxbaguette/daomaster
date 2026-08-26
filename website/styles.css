@@ -1017,6 +1017,38 @@ body.is-details, body.is-modal { overflow: hidden; }
     color: var(--text-muted);
 }
 
+/* ── To do ───────────────────────────────────────────────────────────────── */
+
+.todo-btn { margin: 0 0 26px 10px; vertical-align: top; }
+
+.todo-bar { margin-bottom: 16px; }
+
+/* Taller than the per-DAO tables: this one is the whole point of the view
+   rather than one section among several. */
+.d-scroll.is-tall { max-height: calc(100vh - 260px); }
+
+/* Already signed by this account — still listed, because seeing it done is part
+   of knowing what is left, but stood down so the outstanding rows carry. */
+.d-table tr.is-done td { opacity: .62; }
+.d-table tr.is-done.is-picked td { opacity: 1; }
+
+/* Waiting on this account. The one thing the view exists to point at. */
+.pill.is-todo {
+    color: var(--gold);
+    border-color: rgba(242, 183, 60, .38);
+    background: var(--gold-soft);
+    margin-left: 6px;
+}
+
+/* Raised by a watched account. Says where it came from, not whether it is
+   good — so it borrows the watchlist's blue and nothing stronger. */
+.pill.is-mc-author {
+    color: var(--blue);
+    border-color: rgba(77, 163, 255, .34);
+    background: var(--blue-soft);
+    margin-left: 6px;
+}
+
 /* ── At risk ─────────────────────────────────────────────────────────────── */
 
 /* Red is otherwise only used for failures, which is the right register: a seated

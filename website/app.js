@@ -924,6 +924,7 @@ function daoHtml(dao) {
 function render() {
     daosEl.innerHTML = daos.filter((d) => d.group === group).map(daoHtml).join('')
     refreshVotesChrome()
+    todoChrome()
     const open = daosEl.querySelector(`.dao[data-id="${selectedId}"]`)
     if (open) open.classList.add('is-selected')
     // The panel reads the same `position` map the cards do, so anything that
@@ -1327,6 +1328,15 @@ function groupVoteState() {
     return { inGroup, eligible, missing, complete: inGroup.length > 0 && missing.length === 0 }
 }
 
+function todoChrome() {
+    const btn = $('todoBtn')
+    const councils = todoDaos()
+    btn.hidden = !session || councils.length === 0
+    btn.title = councils.length
+        ? `Open proposals across ${councils.map((d) => d.title).join(', ')}`
+        : ''
+}
+
 function refreshVotesChrome() {
     const btn = $('refreshVotesBtn')
     if (!session || !daos.length) {
@@ -1642,6 +1652,7 @@ panelInner.addEventListener('click', async (e) => {
 // — which is the whole point of an escape hatch.
 document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
+    if (!todoEl.hidden) return closeTodo()
     if (!detailsEl.hidden) return closeDetails()
     if (!panelEl.hidden) return closePanel()
 })
@@ -1850,6 +1861,38 @@ function emptyProposals(dao, props) {
         : `Nothing open in the ${props.length} most recent.`
 }
 
+// One DAO's proposals, joined to their approvals. Split out from loadDetails so
+// the to-do view can gather several DAOs' worth without also dragging in
+// candidate lists it has no use for.
+//
+// The PRIMARY key of `proposals` is `proposal_name`, which sorts alphabetically
+// — reading it in reverse returns the names closest to "zzzz", not the newest
+// rows. `index_position: 3` is the `id` index, and id is a creation counter, so
+// that one really is chronological.
+//
+// One page of it, newest first. Eyeke holds 3028 proposals; paging the lot to
+// fill a screen would be absurd, and anything still open and unexpired was
+// necessarily created recently.
+function fetchProposals(dao) {
+    if (proposalsCache.has(dao.id)) return null
+    return Promise.all([
+        postRows(MSIG_CONTRACT, dao.id, 'proposals', {
+            index_position: 3, key_type: 'i64', limit: 300, reverse: true,
+        }),
+        postRows(MSIG_CONTRACT, dao.id, 'approvals', { limit: 500 }).catch(() => []),
+    ])
+        .then(([rows, approvals]) => {
+            const byName = new Map(approvals.map((a) => [a.proposal_name, a]))
+            // Sorted here rather than trusted from the node: the filters
+            // downstream preserve order, so this is the one place newest-first
+            // is established.
+            proposalsCache.set(dao.id, rows
+                .map((p) => ({ ...p, approvals: byName.get(p.proposal_name) }))
+                .sort((a, b) => Number(b.id) - Number(a.id)))
+        })
+        .catch((err) => { console.error('proposals:', err); proposalsCache.set(dao.id, null) })
+}
+
 async function loadDetails(dao) {
     const jobs = []
     if (!candidatesCache.has(dao.id) && dao.custodianContract) {
@@ -1857,32 +1900,9 @@ async function loadDetails(dao) {
             .then((rows) => candidatesCache.set(dao.id, rows))
             .catch((err) => { console.error('candidates:', err); candidatesCache.set(dao.id, null) }))
     }
-    if (!proposalsCache.has(dao.id)) {
-        // The PRIMARY key of `proposals` is `proposal_name`, which sorts
-        // alphabetically — reading it in reverse returns the names closest to
-        // "zzzz", not the newest rows. `index_position: 3` is the `id` index,
-        // and id is a creation counter, so that one really is chronological.
-        //
-        // One page of it, newest first. Eyeke holds 3028 proposals; paging the
-        // lot to fill a screen would be absurd, and anything still open and
-        // unexpired was necessarily created recently.
-        jobs.push(Promise.all([
-            postRows(MSIG_CONTRACT, dao.id, 'proposals', {
-                index_position: 3, key_type: 'i64', limit: 300, reverse: true,
-            }),
-            postRows(MSIG_CONTRACT, dao.id, 'approvals', { limit: 500 })
-                .catch(() => []),
-        ])
-            .then(([rows, approvals]) => {
-                const byName = new Map(approvals.map((a) => [a.proposal_name, a]))
-                // Sorted here rather than trusted from the node: the filters below
-                // preserve order, so this is the one place newest-first is set.
-                proposalsCache.set(dao.id, rows
-                    .map((p) => ({ ...p, approvals: byName.get(p.proposal_name) }))
-                    .sort((a, b) => Number(b.id) - Number(a.id)))
-            })
-            .catch((err) => { console.error('proposals:', err); proposalsCache.set(dao.id, null) }))
-    }
+    const proposals = fetchProposals(dao)
+    if (proposals) jobs.push(proposals)
+
     if (jobs.length) {
         startPhase(jobs.length)
         await Promise.all(jobs)
@@ -1891,6 +1911,7 @@ async function loadDetails(dao) {
 }
 
 async function openDetails(id) {
+    closeTodo()
     detailsId = id
     detailsTab = 'proposals'
     periodFormOpen = false
@@ -2393,6 +2414,269 @@ async function refreshProposals(dao) {
     await loadDetails(dao)
 }
 
+// ── To do ─────────────────────────────────────────────────────────────────
+//
+// One list of everything open that this account can act on, gathered across
+// every council it sits on that the watched accounts also control. Both
+// conditions have to hold: a seat gives the ability to approve, and the MC
+// marker is what makes it this account's business.
+//
+// Only open, unexpired proposals appear. An expired one can never execute, so
+// it is not a to-do — it is history.
+
+const todoEl = $('todo')
+let todoOpen = false
+let todoPicked = new Set()   // "<dac_id>/<proposal_name>", unique across DAOs
+
+const todoKey = (dao, p) => `${dao.id}/${p.proposal_name}`
+
+// Both conditions, as the user framed them: MC-controlled AND you hold a seat.
+function todoDaos() {
+    if (!session) return []
+    const me = String(session.actor)
+    return daos.filter((d) => {
+        const mc = d.custodians.filter((n) => WATCHED.has(n)).length >= CONTROL_THRESHOLD
+        return mc && d.custodians.includes(me)
+    })
+}
+
+// Flattened to one list so a single select-all and a single transaction can
+// span councils. Each row keeps its DAO, because every action needs its dac_id.
+function todoRows() {
+    const out = []
+    for (const dao of todoDaos()) {
+        for (const p of proposalsCache.get(dao.id) ?? []) {
+            if (p.state === MSIG_OPEN && !isExpired(p)) out.push({ dao, p })
+        }
+    }
+    return out.sort((a, b) => msigExpiry(a.p.packed_transaction) - msigExpiry(b.p.packed_transaction))
+}
+
+async function openTodo() {
+    todoOpen = true
+    todoPicked = new Set()
+    closePanel()
+    closeDetails()
+    renderTodo()
+
+    const wanted = todoDaos().map(fetchProposals).filter(Boolean)
+    if (wanted.length) {
+        startPhase(wanted.length * 2)
+        await Promise.all(wanted)
+        endPhase()
+    }
+    if (todoOpen) renderTodo()
+}
+
+function closeTodo() {
+    todoOpen = false
+    todoEl.hidden = true
+    document.body.classList.remove('is-details')
+}
+
+function renderTodo() {
+    if (!todoOpen) return
+    let html
+    try {
+        html = buildTodo()
+    } catch (err) {
+        console.error('Could not render the to-do list:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="todoBack" type="button">← All DAOs</button>
+                <div class="d-title"><h2>To do</h2></div>
+            </header>
+            <p class="panel-note is-error">This view could not be drawn: ${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+    todoEl.innerHTML = html
+    todoEl.hidden = false
+    document.body.classList.add('is-details')
+    paintTodoNote()
+}
+
+function buildTodo() {
+    const councils = todoDaos()
+    const rows = todoRows()
+    const loading = councils.some((d) => !proposalsCache.has(d.id))
+
+    const chosen = rows.filter(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+    const approvable = chosen.filter(({ dao, p }) => canApprove(p, dao.custodians.includes(String(session.actor))))
+    const runnable = chosen.filter(({ dao, p }) => canExecute(p, dao))
+    const allPicked = rows.length > 0 && chosen.length === rows.length
+
+    const body = !session
+        ? '<p class="panel-empty">Connect a wallet to see what is waiting on you.</p>'
+        : councils.length === 0
+            ? `<p class="panel-empty">No council here is both MC controlled and one you hold a seat on.
+               That pairing is what puts a proposal on this list.</p>`
+            : `
+        <div class="d-actions todo-bar">
+            <button class="act-mini" id="todoAll" type="button" ${rows.length ? '' : 'disabled'}>
+                ${allPicked ? 'clear selection' : `select all ${rows.length || ''}`}</button>
+            <button class="act-go" id="todoApprove" type="button"
+                ${busy || !approvable.length ? 'disabled' : ''}
+                title="Signs the ones you have not already approved">
+                Approve ${approvable.length || ''}</button>
+            <button class="act-go" id="todoExec" type="button"
+                ${busy || !runnable.length ? 'disabled' : ''}
+                title="Runs the ones that already have enough approvals">
+                Execute ${runnable.length || ''}</button>
+            <span class="d-dim">${chosen.length} selected of ${rows.length}</span>
+        </div>
+
+        <div class="d-scroll is-tall">
+        <table class="d-table">
+            <thead><tr>
+                <th></th><th>DAO</th><th>Proposal</th>
+                <th class="num">Approvals</th><th class="num">Expires</th>
+            </tr></thead>
+            <tbody>
+            ${rows.map(({ dao, p }) => {
+                const key = todoKey(dao, p)
+                const on = todoPicked.has(key)
+                const need = dao.approvalThreshold ?? 3
+                const got = approvalCount(p)
+                const mine = approvedByMe(p)
+                // Raised by one of the watched accounts. Worth knowing before
+                // signing: it says where the proposal came from, not whether it
+                // is good.
+                const byMc = WATCHED.has(p.proposer)
+                const title = msigTitle(p)
+                return `<tr class="${on ? 'is-picked' : ''}${mine ? ' is-done' : ''}">
+                    <td><input type="checkbox" data-todo="${esc(key)}" ${on ? 'checked' : ''}></td>
+                    <td><b>${esc(dao.title)}</b>
+                        <span class="d-dim">${esc(dao.symbol)}</span></td>
+                    <td>
+                        <b>${esc(title.length > 80 ? `${title.slice(0, 80)}…` : title)}</b>
+                        <span class="d-dim">${esc(p.proposal_name)} · by ${esc(p.proposer)}
+                            ${byMc ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                        </span>
+                    </td>
+                    <td class="num ${got >= need ? 'is-enough' : ''}">${got} <span class="d-dim">/ ${need}</span>
+                        ${mine ? '<span class="pill is-mine" title="You have already approved this">approved</span>'
+                               : '<span class="pill is-todo">needs you</span>'}</td>
+                    <td class="num">${esc(isoDay(msigExpiry(p.packed_transaction)))}</td>
+                </tr>`
+            }).join('') || `<tr><td colspan="5" class="d-dim">${
+                loading ? 'Reading proposals…'
+                        : 'Nothing open and unexpired across those councils.'}</td></tr>`}
+            </tbody>
+        </table>
+        </div>`
+
+    return `
+        <div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="todoBack" type="button">← All DAOs</button>
+                <div class="d-title">
+                    <h2>To do</h2>
+                    <p class="panel-sub">${councils.length} council${councils.length === 1 ? '' : 's'}
+                        you sit on that the watched accounts control${
+                        rows.length ? ` · ${rows.filter(({ p }) => !approvedByMe(p)).length} still need your approval` : ''}</p>
+                </div>
+            </header>
+            <p class="panel-note" id="todoNote" hidden></p>
+            ${body}
+        </div>`
+}
+
+let todoMessage = null
+function todoNote(text, kind = '') {
+    todoMessage = text ? { text, kind } : null
+    paintTodoNote()
+}
+function paintTodoNote() {
+    const el = $('todoNote')
+    if (!el) return
+    el.textContent = todoMessage?.text ?? ''
+    el.className = `panel-note${todoMessage?.kind ? ` is-${todoMessage.kind}` : ''}`
+    el.hidden = !todoMessage
+}
+
+// One transaction spanning several councils: every action carries its own
+// dac_id, and they are all signed by the same account, so they can ride
+// together.
+async function submitTodo(actions, describe, touched) {
+    if (!session || busy || !actions.length) return
+    busy = true
+    renderTodo()
+    todoNote(`${describe} — check your wallet…`, 'work')
+    try {
+        await session.transact({ actions }, { broadcast: true })
+        todoNote(`${describe} sent — re-reading…`, 'ok')
+        await sleep(2500)
+        for (const id of touched) proposalsCache.delete(id)
+        todoPicked = new Set()
+        const again = todoDaos().map(fetchProposals).filter(Boolean)
+        if (again.length) await Promise.all(again)
+        todoNote(`${describe} done.`, 'ok')
+    } catch (err) {
+        if (isUserCancel(err)) todoNote('Cancelled.')
+        else {
+            console.error(`${describe} failed:`, err)
+            todoNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderTodo()
+    }
+}
+
+todoEl.addEventListener('change', (e) => {
+    const box = e.target.closest('[data-todo]')
+    if (!box) return
+    if (box.checked) todoPicked.add(box.dataset.todo)
+    else todoPicked.delete(box.dataset.todo)
+    renderTodo()
+})
+
+todoEl.addEventListener('click', (e) => {
+    if (e.target.closest('#todoBack')) return closeTodo()
+
+    const rows = todoRows()
+
+    if (e.target.closest('#todoAll')) {
+        const all = rows.length > 0 && rows.every(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+        todoPicked = all ? new Set() : new Set(rows.map(({ dao, p }) => todoKey(dao, p)))
+        return renderTodo()
+    }
+
+    const approve = e.target.closest('#todoApprove')
+    const exec = e.target.closest('#todoExec')
+    if (!approve && !exec) return
+
+    const me = String(session.actor)
+    const chosen = rows.filter(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+
+    if (approve) {
+        const votable = chosen.filter(({ dao, p }) => canApprove(p, dao.custodians.includes(me)))
+        if (!votable.length) return todoNote('Nothing selected still needs your approval.', 'error')
+        const level = {
+            actor: me,
+            permission: session.permissionLevel.permission
+                ? String(session.permissionLevel.permission) : 'active',
+        }
+        return submitTodo(
+            votable.map(({ dao, p }) => ({
+                account: MSIG_CONTRACT, name: 'approve', authorization: auth(),
+                data: { proposal_name: p.proposal_name, level, dac_id: dao.id },
+            })),
+            `Approve ${votable.length} proposal${votable.length === 1 ? '' : 's'}`,
+            [...new Set(votable.map(({ dao }) => dao.id))])
+    }
+
+    const runnable = chosen.filter(({ dao, p }) => canExecute(p, dao))
+    if (!runnable.length) return todoNote('None of the selected have enough approvals yet.', 'error')
+    return submitTodo(
+        runnable.map(({ dao, p }) => ({
+            account: MSIG_CONTRACT, name: 'exec', authorization: auth(),
+            data: { proposal_name: p.proposal_name, executer: me, dac_id: dao.id },
+        })),
+        `Execute ${runnable.length} proposal${runnable.length === 1 ? '' : 's'}`,
+        [...new Set(runnable.map(({ dao }) => dao.id))])
+})
+
 // ── Events ────────────────────────────────────────────────────────────────
 
 // Each card carries its own two buttons. The card itself is no longer a control:
@@ -2424,6 +2708,7 @@ async function refreshAll() {
 
 $('refreshBtn').addEventListener('click', refreshAll)
 $('refreshVotesBtn').addEventListener('click', refreshGroupVotes)
+$('todoBtn').addEventListener('click', openTodo)
 
 for (const [id, value] of [['tabSyndicates', 'syndicate'], ['tabUnions', 'union']]) {
     $(id).addEventListener('click', () => {
