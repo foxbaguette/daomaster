@@ -42,6 +42,20 @@ jobs:
         with:
           enablement: true
 
+      # Pages serves everything with `Cache-Control: max-age=600`, so for ten
+      # minutes after a deploy a browser keeps handing back the previous app.js
+      # and styles.css from its own cache — the deploy lands and nothing appears
+      # to change. Stamping the commit onto the asset URLs makes each deploy a
+      # URL the browser has never seen, so it cannot serve a stale one.
+      #
+      # Only the uploaded copy is rewritten; the file in the repo is untouched.
+      - name: Stamp the asset URLs with this commit
+        working-directory: website
+        run: |
+          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${GITHUB_SHA::8}\"|" index.html
+          sed -i "s|src=\"app.js\"|src=\"app.js?v=${GITHUB_SHA::8}\"|" index.html
+          grep -E 'styles\.css\?v=|app\.js\?v=' index.html
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: website
