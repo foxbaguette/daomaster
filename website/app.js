@@ -594,6 +594,17 @@ function isoDay(ms) {
     try { return new Date(ms).toISOString().slice(0, 10) } catch { return '—' }
 }
 
+// How far off a date is, rather than the date itself. "in 12d" answers the
+// question people actually have about a period; 2026-09-11 makes them do the
+// subtraction. The exact date stays on hover.
+function fmtWhen(ms) {
+    if (!Number.isFinite(ms)) return '—'
+    const diff = ms - Date.now()
+    const days = Math.round(Math.abs(diff) / 86400000)
+    if (days === 0) return diff >= 0 ? 'today' : 'today'
+    return diff > 0 ? `in ${days}d` : `${days}d ago`
+}
+
 function isoMinute(ms) {
     if (!Number.isFinite(ms)) return '—'
     try { return new Date(ms).toISOString().replace('T', ' ').slice(0, 16) } catch { return '—' }
@@ -2829,13 +2840,19 @@ function buildAllocatorDetails(name) {
                     <td><span class="pill ${c.debug_mode ? 'is-debug' : 'is-live'}"
                         title="debug_mode = ${c.debug_mode ? 1 : 0}">${
                         c.debug_mode ? 'debug' : 'live'}</span></td>
-                    <td class="num" title="${esc(spentTitle)}">${esc(points(mySpent))}</td>
+                    <td class="num" title="${esc(spentTitle)}">
+                        ${esc(points(mySpent))}
+                        <span class="spend-bar ${pct >= 100 ? 'is-full' : ''}">
+                            <span style="width:${pct}%"></span>
+                        </span>
+                        <span class="spend-pct">${pct.toFixed(0)}%</span>
+                    </td>
                     <td class="num" title="${esc(points(r.allocated))} per day over ${days} days. ${
                         esc(r.account)} has ${esc(points(c.period_budget))} from all its funders.">
                         ${esc(points(myBudget))}</td>
                     <td class="num ${lapsed ? 'is-lapsed' : ''}"
-                        title="${days} day period, ${lapsed ? 'already lapsed' : 'still open'}">
-                        ${esc(isoDay(ends))}</td>
+                        title="${days} day period, ending ${esc(isoDay(ends))}">
+                        ${esc(fmtWhen(ends))}</td>
                     ${canAllocate ? `<td class="num alloc-actions">
                         <button class="act-mini" data-alloc-op="add" data-to="${esc(r.account)}"
                                 type="button">increase</button>

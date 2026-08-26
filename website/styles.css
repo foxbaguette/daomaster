@@ -1239,9 +1239,42 @@ body.is-details, body.is-modal { overflow: hidden; }
 .pill.is-live  { color: var(--ok); border-color: rgba(74, 214, 160, .35); background: rgba(74, 214, 160, .07); }
 .pill.is-debug { color: var(--gold); border-color: rgba(242, 183, 60, .40); background: var(--gold-soft); }
 
-/* A period whose end has already passed. */
-.d-table td.is-lapsed { color: var(--text-faint); }
+/* A period whose end has already passed. Red rather than dimmed: a lapsed
+   period is a thing to notice, not a thing to fade out. */
+.d-table td.is-lapsed { color: var(--danger); }
 .d-table td.is-lapsed .row-id { color: var(--danger); }
+
+/* How much of this allocator's own period budget the recipient has spent. A bar
+   under the figure, because "84,529 of 160,000" is a division nobody should
+   have to do while scanning a column. */
+.spend-bar {
+    display: block;
+    height: 6px;
+    margin: 7px 0 4px;
+    background: rgba(150, 160, 210, .14);
+    border: 1px solid var(--line-soft);
+    position: relative;
+    overflow: hidden;
+}
+
+.spend-bar > span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: linear-gradient(90deg, rgba(242, 183, 60, .5), var(--gold));
+}
+
+/* Spent the lot. Not an error — the budget is there to be used — but it is the
+   point at which nothing more can be drawn until the period rolls. */
+.spend-bar.is-full > span {
+    background: linear-gradient(90deg, rgba(255, 90, 110, .5), var(--danger));
+}
+
+.spend-pct {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+}
 
 /* Five columns of plain figures, so there is room to make them legible. The
    dense table exists because proposal rows carry a title, a proposer and a
@@ -1261,6 +1294,10 @@ body.is-details, body.is-modal { overflow: hidden; }
     font-size: 19px;
     color: var(--text);
 }
+
+/* Has to out-specify the rule above, which is 0,3,1 and would otherwise repaint
+   a lapsed period back to ordinary text. */
+.d-table.is-roomy td.num.is-lapsed { color: var(--danger); }
 
 .d-table.is-roomy .row-dao { font-size: 18px; }
 .d-table.is-roomy .pill { font-size: 13px; padding: 4px 11px; }
