@@ -2569,11 +2569,20 @@ const points = (v) => {
     return Number.isFinite(n) ? Math.trunc(n / 10).toLocaleString('en-US') : '—'
 }
 
-// The same figures that are not scaled — period_total and period_budget are
-// shown as the contract stores them.
+// The same figures that are not scaled.
 const plain = (v) => {
     const n = Number(v)
     return Number.isFinite(n) ? Math.trunc(n).toLocaleString('en-US') : '—'
+}
+
+// The `allocators` table is on a different footing from everything else here:
+// its figures cover a TEN day period. Multiplying by three puts an allocator's
+// budget on the same thirty-day basis the allocations beneath it run to, so the
+// two can be read against each other. It is NOT divided by ten — that scaling
+// belongs to the points figures, not to these.
+const shards = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.trunc(n * 3).toLocaleString('en-US') : '—'
 }
 
 // `period_duration` is documented as days and defaults to 30, but the contract's
@@ -2709,22 +2718,22 @@ function allocatorHtml(a) {
         <dl class="alloc-figs">
             <div>
                 <dt>Budget</dt>
-                <dd>${esc(points(a.budget))}</dd>
+                <dd>${esc(shards(a.budget))}</dd>
             </div>
             <div>
                 <dt>Allocated</dt>
-                <dd class="${used > budget ? 'is-over' : ''}">${esc(points(a.allocated))}</dd>
+                <dd class="${used > budget ? 'is-over' : ''}">${esc(shards(a.allocated))}</dd>
             </div>
             <div>
                 <dt>Unallocated</dt>
-                <dd class="${left < 0 ? 'is-over' : ''}">${esc(points(left))}</dd>
+                <dd class="${left < 0 ? 'is-over' : ''}">${esc(shards(left))}</dd>
             </div>
         </dl>
 
         <div class="alloc-bar" title="${pct.toFixed(1)}% of the budget allocated">
             <span style="width:${pct}%"></span>
         </div>
-        <p class="alloc-note">per day · a period runs 30 days</p>
+        <p class="alloc-note">over 30 days</p>
 
         <div class="dao-btns">
             <button class="card-btn is-primary" data-allocdetails="${esc(a.allocator)}"
@@ -2826,8 +2835,8 @@ function buildAllocatorDetails(name) {
             <div class="d-title">
                 <h2>${esc(name)}</h2>
                 <p class="panel-sub">point allocator on ${POINTS_CONTRACT} ·
-                    budget ${esc(points(a?.budget ?? 0))} ·
-                    allocated ${esc(points(a?.allocated ?? 0))} · per day</p>
+                    budget ${esc(shards(a?.budget ?? 0))} ·
+                    allocated ${esc(shards(a?.allocated ?? 0))} · over 30 days</p>
             </div>
         </header>
         <p class="panel-note" id="detailsNote" hidden></p>
