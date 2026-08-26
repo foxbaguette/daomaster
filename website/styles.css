@@ -788,7 +788,64 @@ body.is-details, body.is-modal { overflow: hidden; }
 .pill.is-mine        { color: var(--blue); border-color: rgba(77, 163, 255, .34);
                        background: var(--blue-soft); margin-left: 6px; }
 
-/* Enough signatures collected to satisfy the permission — i.e. runnable. */
+/* ── Approvals ───────────────────────────────────────────────────────────── */
+
+/* How close a proposal is to running is the thing worth scanning a column for,
+   so it is drawn as well as written: a big count and one pip per signature the
+   threshold wants. */
+.approvals {
+    text-align: right;
+    white-space: nowrap;
+    padding: 8px 10px;
+    vertical-align: middle;
+}
+
+.app-n {
+    display: block;
+    font-family: var(--mono);
+    font-size: 19px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--text);
+}
+
+.app-need {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-faint);
+    margin-left: 1px;
+}
+
+.pips {
+    display: flex;
+    gap: 3px;
+    justify-content: flex-end;
+    margin-top: 6px;
+}
+
+.pips i {
+    width: 10px;
+    height: 10px;
+    border: 1px solid var(--line);
+    background: transparent;
+}
+.pips i.on { background: var(--text-muted); border-color: var(--text-muted); }
+
+/* Nobody has signed yet. A starting state, not an alarm — so it stays quiet. */
+.approvals.is-none .app-n { color: var(--text-faint); }
+
+/* Part-way there: legible, and obviously not finished. */
+.approvals.is-part .app-n { color: var(--text); }
+
+/* Enough signatures to satisfy the permission — this one can actually run. */
+.approvals.is-enough .app-n { color: var(--ok); }
+.approvals.is-enough .app-need { color: rgba(74, 214, 160, .6); }
+.approvals.is-enough .pips i.on {
+    background: var(--ok);
+    border-color: var(--ok);
+    box-shadow: 0 0 6px rgba(74, 214, 160, .45);
+}
+
 .d-table td.is-enough { color: var(--ok); }
 .pill.is-apprvtes,
 .pill.is-apprfinvtes { color: var(--gold); border-color: rgba(242, 183, 60, .38); }

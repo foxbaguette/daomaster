@@ -1759,6 +1759,30 @@ function propMatches(p) {
 const approvalsOf = (p) => p.approvals?.provided_approvals ?? []
 const approvalCount = (p) => approvalsOf(p).length
 
+// How close a proposal is to being executable is the single most useful thing
+// about it, so it is drawn rather than written: one pip per signature the
+// threshold wants, filled as they arrive. At a threshold of three that reads
+// instantly across a column, which a mono "2 / 3" never did.
+//
+// Zero stays quiet — nobody has signed, which is a starting state, not an alarm.
+// Part-way is bright. Complete goes green, the same green the page already uses
+// for "this can run".
+function approvalCell(p, need) {
+    const got = approvalCount(p)
+    const enough = got >= need
+    const tone = enough ? 'is-enough' : got > 0 ? 'is-part' : 'is-none'
+    const pips = Array.from({ length: Math.max(need, got) }, (_, i) =>
+        `<i class="${i < got ? 'on' : ''}"></i>`).join('')
+    const who = approvalsOf(p).map((a) => a.level?.actor).filter(Boolean).join(', ')
+
+    return `
+    <td class="approvals ${tone}"
+        title="${got} of ${need} signatures needed${who ? ` — signed by ${esc(who)}` : ' — nobody has signed yet'}">
+        <span class="app-n">${got}<span class="app-need">/${need}</span></span>
+        <span class="pips">${pips}</span>
+    </td>`
+}
+
 // An approval is recorded per account, so signing one twice is wasted — the
 // contract already holds this account's signature.
 const approvedByMe = (p) =>
@@ -2179,14 +2203,8 @@ function buildDetails(dao) {
                 ${shown.map((p) => {
                     const on = pickedProposals.has(p.proposal_name)
                     const exp = msigExpiry(p.packed_transaction)
-                    const got = approvalCount(p)
                     const mine = approvedByMe(p)
                     const title = msigTitle(p)
-                    // Counted against the threshold, not against
-                    // `requested_approvals`. That array holds a single entry —
-                    // the owner permission — so the old denominator rendered
-                    // "2 / 1", which reads as more approvals than were asked for.
-                    const enough = got >= need
                     return `<tr class="${on ? 'is-picked' : ''}">
                         ${canPick ? `<td><input type="checkbox" data-prop="${esc(p.proposal_name)}"
                              ${on ? 'checked' : ''}></td>` : ''}
@@ -2197,8 +2215,7 @@ function buildDetails(dao) {
                         <td><span class="pill is-${STATE_CLASS[p.state] ?? 'open'}">${
                             esc(STATE_LABEL[p.state] ?? `state ${p.state}`)}</span>
                             ${mine ? '<span class="pill is-mine" title="This account has already approved">you</span>' : ''}</td>
-                        <td class="num ${enough ? 'is-enough' : ''}"
-                            title="${got} of ${need} signatures needed">${got} <span class="d-dim">/ ${need}</span></td>
+                        ${approvalCell(p, need)}
                         <td class="num">${Number.isFinite(exp)
                             ? esc(isoDay(exp)) : '—'}</td>
                     </tr>`
@@ -2559,14 +2576,13 @@ function buildTodo() {
         <table class="d-table">
             <thead><tr>
                 <th></th><th>DAO</th><th>Proposal</th>
-                <th class="num">Approvals</th><th class="num">Expires</th>
+                <th class="num">Approvals</th><th class="num">You / expires</th>
             </tr></thead>
             <tbody>
             ${rows.map(({ dao, p }) => {
                 const key = todoKey(dao, p)
                 const on = todoPicked.has(key)
                 const need = dao.approvalThreshold ?? 3
-                const got = approvalCount(p)
                 const mine = approvedByMe(p)
                 // Raised by one of the watched accounts. Worth knowing before
                 // signing: it says where the proposal came from, not whether it
@@ -2583,10 +2599,11 @@ function buildTodo() {
                             ${byMc ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
                         </span>
                     </td>
-                    <td class="num ${got >= need ? 'is-enough' : ''}">${got} <span class="d-dim">/ ${need}</span>
-                        ${mine ? '<span class="pill is-mine" title="You have already approved this">approved</span>'
-                               : '<span class="pill is-todo">needs you</span>'}</td>
-                    <td class="num">${esc(isoDay(msigExpiry(p.packed_transaction)))}</td>
+                    ${approvalCell(p, need)}
+                    <td class="num">${mine
+                        ? '<span class="pill is-mine" title="You have already approved this">approved</span>'
+                        : '<span class="pill is-todo">needs you</span>'}<br>
+                        <span class="d-dim">${esc(isoDay(msigExpiry(p.packed_transaction)))}</span></td>
                 </tr>`
             }).join('') || `<tr><td colspan="5" class="d-dim">${
                 loading ? 'Reading proposals…'
