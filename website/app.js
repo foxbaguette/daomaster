@@ -1690,7 +1690,9 @@ let detailsId = null
 let candidatesCache = new Map()
 let proposalsCache = new Map()
 let propFilter = 'active'
-let detailsTab = 'council'   // council & candidates, or proposals
+// Proposals first: they are the half with something to act on, and they go
+// stale. The council is a standing fact you can read whenever.
+let detailsTab = 'proposals'   // proposals, or council & candidates
 let periodFormOpen = false   // the election-period proposal form
 let pickedCandidates = new Set()
 let pickedProposals = new Set()
@@ -1890,7 +1892,7 @@ async function loadDetails(dao) {
 
 async function openDetails(id) {
     detailsId = id
-    detailsTab = 'council'
+    detailsTab = 'proposals'
     periodFormOpen = false
 
     // Start from the slate already cast, so the boxes show what you voted for
