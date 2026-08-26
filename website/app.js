@@ -2706,7 +2706,19 @@ function fundingShare(recipient, allocator) {
             if (a.allocator === allocator) mine = v
         }
     }
-    return { mine, total, share: total > 0 ? mine / total : 0 }
+    // Whether this allocator is the recipient's only funder matters: if it is,
+    // the whole period_budget is its own exactly, with nothing apportioned.
+    const funders = new Set()
+    for (const a of allocators) {
+        for (const r of allocationsCache.get(a.allocator) ?? []) {
+            if (r.account === recipient) funders.add(a.allocator)
+        }
+    }
+    return {
+        mine, total,
+        share: total > 0 ? mine / total : 0,
+        only: funders.size === 1 && funders.has(allocator),
+    }
 }
 
 async function loadAllocations(name) {
@@ -2814,26 +2826,48 @@ function buildAllocatorDetails(name) {
                 const ends = Date.parse(`${c.period_end}Z`)
                 const lapsed = Number.isFinite(ends) && ends < Date.now()
                 const days = durationDays(c.period_duration) ?? 30
-                const { share } = fundingShare(r.account, name)
+                const { share, only } = fundingShare(r.account, name)
 
-                // What THIS allocator puts in over a period: its per-day
-                // allocation across the period's days. Exact — its own number,
-                // not a slice of someone else's.
-                const myBudget = Number(r.allocated) * days
-
-                // Spend has no per-funder record, so it is apportioned by share
-                // of funding. The workings moved into the tooltips when the
-                // table was cleaned up; the figures carry the row now.
+                // `period_budget` is the authority on what a recipient may spend,
+                // NOT allocated × days.
+                //
+                // addbudget accumulates period_budget but OVERWRITES allocated:
+                //
+                //     a.allocated = allocation_budget_clamped;   // replaces
+                //     manager_settings.period_budget += budget;  // accumulates
+                //
+                // so an allocator that has topped a recipient up twice leaves
+                // `allocated` showing only the last call. theminergame is one:
+                // trilara funds it alone, allocated × 30 comes to 600,000, and
+                // the real period_budget is 1,200,000. Budgeting off `allocated`
+                // made a recipient look 124% spent when it had used 62%.
+                const myBudget = Number(c.period_budget) * share
                 const mySpent = Number(c.period_total) * share
-                const pct = myBudget > 0 ? Math.min(100, (mySpent / myBudget) * 100) : 0
+
+                // Both sides carry the same share, so it cancels: this is the
+                // recipient's true utilisation and cannot exceed 100% unless the
+                // contract has genuinely allowed an overspend.
+                const pct = myBudget > 0 ? (mySpent / myBudget) * 100 : 0
                 const sharePct = (share * 100).toFixed(share >= 0.1 ? 0 : 1)
 
                 // Built here rather than inline: the workings are long, and a
                 // template literal broken across lines to fit them was what
                 // produced a malformed one last time.
-                const spentTitle = `${sharePct}% of ${r.account}'s funding comes from ${name}, `
-                    + `so that share of its ${points(c.period_total)} spend this period is attributed `
-                    + `here — ${pct.toFixed(0)}% of what you put in.`
+                const spentTitle = only
+                    ? `${name} is the only funder, so all of ${r.account}'s `
+                      + `${points(c.period_total)} spend this period is its own — `
+                      + `${pct.toFixed(0)}% of the budget.`
+                    : `${sharePct}% of ${r.account}'s funding comes from ${name}, so that share of `
+                      + `its ${points(c.period_total)} spend is attributed here — `
+                      + `${pct.toFixed(0)}% of the budget.`
+
+                const budgetTitle = only
+                    ? `${r.account}'s whole period_budget, since ${name} is its only funder. `
+                      + `Read from the contract rather than derived from the allocation: addbudget `
+                      + `accumulates period_budget but overwrites allocated, so allocated x days `
+                      + `undercounts anyone topped up more than once.`
+                    : `${sharePct}% of ${r.account}'s ${points(c.period_budget)} period budget, `
+                      + `apportioned by funding share.`
 
                 return `<tr>
                     <td><b class="row-dao">${esc(r.account)}</b></td>
@@ -2847,9 +2881,7 @@ function buildAllocatorDetails(name) {
                         </span>
                         <span class="spend-pct">${pct.toFixed(0)}%</span>
                     </td>
-                    <td class="num" title="${esc(points(r.allocated))} per day over ${days} days. ${
-                        esc(r.account)} has ${esc(points(c.period_budget))} from all its funders.">
-                        ${esc(points(myBudget))}</td>
+                    <td class="num" title="${esc(budgetTitle)}">${esc(points(myBudget))}</td>
                     <td class="num ${lapsed ? 'is-lapsed' : ''}"
                         title="${days} day period, ending ${esc(isoDay(ends))}">
                         ${esc(fmtWhen(ends))}</td>
