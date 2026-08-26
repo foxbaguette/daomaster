@@ -794,56 +794,90 @@ body.is-details, body.is-modal { overflow: hidden; }
    so it is drawn as well as written: a big count and one pip per signature the
    threshold wants. */
 .approvals {
-    text-align: right;
+    width: 1%;
     white-space: nowrap;
     padding: 8px 10px;
     vertical-align: middle;
 }
 
+/* A block, not a figure in a column. Whether a proposal is one signature short
+   or ready to run is the question people open this table to answer, so it is
+   given its own panel and a number that can be read across the room. */
+.app-badge {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    min-width: 92px;
+    padding: 10px 12px 9px;
+    background: var(--panel-in);
+    border: 1px solid var(--line);
+}
+
 .app-n {
-    display: block;
     font-family: var(--mono);
-    font-size: 19px;
+    font-size: 32px;
     font-weight: 600;
-    line-height: 1;
+    line-height: .95;
+    letter-spacing: -.02em;
     color: var(--text);
 }
 
 .app-need {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 400;
     color: var(--text-faint);
     margin-left: 1px;
 }
 
-.pips {
-    display: flex;
-    gap: 3px;
-    justify-content: flex-end;
-    margin-top: 6px;
-}
+/* Segments rather than dots: at this size a bar reads as "one of the three"
+   where a dot reads as decoration. */
+.pips { display: flex; gap: 4px; }
 
 .pips i {
-    width: 10px;
-    height: 10px;
+    width: 18px;
+    height: 6px;
     border: 1px solid var(--line);
     background: transparent;
 }
 .pips i.on { background: var(--text-muted); border-color: var(--text-muted); }
+
+.app-tag {
+    font-size: 9.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
 
 /* Nobody has signed yet. A starting state, not an alarm — so it stays quiet. */
 .approvals.is-none .app-n { color: var(--text-faint); }
 
 /* Part-way there: legible, and obviously not finished. */
 .approvals.is-part .app-n { color: var(--text); }
+.approvals.is-part .app-badge { border-color: rgba(150, 160, 210, .30); }
 
-/* Enough signatures to satisfy the permission — this one can actually run. */
+/* Enough signatures to satisfy the permission — this one can actually run, and
+   that is worth seeing from the other side of the table. */
 .approvals.is-enough .app-n { color: var(--ok); }
-.approvals.is-enough .app-need { color: rgba(74, 214, 160, .6); }
+.approvals.is-enough .app-need { color: rgba(74, 214, 160, .55); }
+.approvals.is-enough .app-tag { color: var(--ok); }
+.approvals.is-enough .app-badge {
+    border-color: rgba(74, 214, 160, .45);
+    background: rgba(74, 214, 160, .07);
+    box-shadow: 0 0 18px rgba(74, 214, 160, .10);
+}
 .approvals.is-enough .pips i.on {
     background: var(--ok);
     border-color: var(--ok);
-    box-shadow: 0 0 6px rgba(74, 214, 160, .45);
+    box-shadow: 0 0 7px rgba(74, 214, 160, .5);
+}
+
+/* Executed: settled history, and identical on every row. Stated, not shouted. */
+.approvals.is-past {
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-faint);
 }
 
 .d-table td.is-enough { color: var(--ok); }

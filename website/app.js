@@ -1770,16 +1770,28 @@ const approvalCount = (p) => approvalsOf(p).length
 function approvalCell(p, need) {
     const got = approvalCount(p)
     const enough = got >= need
+    const who = approvalsOf(p).map((a) => a.level?.actor).filter(Boolean).join(', ')
+    const title = `${got} of ${need} signatures needed${
+        who ? ` — signed by ${esc(who)}` : ' — nobody has signed yet'}`
+
+    // On an executed proposal the count is settled history and every row reads
+    // the same. Giving those the full badge would shout the same thing 250 times
+    // and drown the open ones, which are the only rows where it decides anything.
+    if (p.state !== MSIG_OPEN) {
+        return `<td class="approvals is-past" title="${title}">${got}<span class="app-need">/${need}</span></td>`
+    }
+
     const tone = enough ? 'is-enough' : got > 0 ? 'is-part' : 'is-none'
     const pips = Array.from({ length: Math.max(need, got) }, (_, i) =>
         `<i class="${i < got ? 'on' : ''}"></i>`).join('')
-    const who = approvalsOf(p).map((a) => a.level?.actor).filter(Boolean).join(', ')
 
     return `
-    <td class="approvals ${tone}"
-        title="${got} of ${need} signatures needed${who ? ` — signed by ${esc(who)}` : ' — nobody has signed yet'}">
-        <span class="app-n">${got}<span class="app-need">/${need}</span></span>
-        <span class="pips">${pips}</span>
+    <td class="approvals ${tone}" title="${title}">
+        <span class="app-badge">
+            <span class="app-n">${got}<span class="app-need">/${need}</span></span>
+            <span class="pips">${pips}</span>
+            <span class="app-tag">${enough ? 'ready' : `needs ${need - got} more`}</span>
+        </span>
     </td>`
 }
 
