@@ -91,7 +91,10 @@ const RATE_WINDOW = 3000
 // The scheduler is the real throttle, so the worker count only has to be high
 // enough to keep every node busy.
 const CONCURRENCY = 6
-const PROBE_TIMEOUT = 4000
+// A first pass short enough to pick a genuinely fast node, and a second pass
+// long enough that nothing healthy can miss it.
+const PROBE_TIMEOUT = 6000
+const PROBE_RETRY_TIMEOUT = 15000
 
 // A read that fails gets re-issued against a different node before giving up.
 const MAX_ATTEMPTS = 3
@@ -115,10 +118,21 @@ const barFill   = $('progressFill')
 
 // The status line stays out of the way unless something needs saying. A
 // running count of how many nodes answered is not news; a failed read is.
-function setStatus(text, kind = '') {
+function setStatus(text, kind = '', { retry = false } = {}) {
     statusEl.textContent = text ?? ''
     statusEl.classList.toggle('is-error', kind === 'error')
     statusEl.hidden = !text
+    // A failure the reader can act on beats one that tells them to reload. The
+    // button restarts the whole boot, session and all.
+    if (retry && text) {
+        const b = document.createElement('button')
+        b.className = 'act-mini'
+        b.type = 'button'
+        b.textContent = 'try again'
+        b.style.marginLeft = '10px'
+        b.addEventListener('click', () => { b.disabled = true; boot() })
+        statusEl.appendChild(b)
+    }
 }
 
 
@@ -302,12 +316,12 @@ async function postRows(code, scope, table, extra = {}) {
 // Probe with the exact request the app makes — POST + application/json, which
 // forces a CORS preflight. A bare GET would pass on nodes the browser later
 // refuses.
-async function probe(url) {
+async function probe(url, timeout = PROBE_TIMEOUT) {
     const t0 = performance.now()
     try {
         const data = await post(
             { json: true, code: DIRECTORY, scope: DIRECTORY, table: 'dacs', limit: 1 },
-            { timeout: PROBE_TIMEOUT, url })
+            { timeout, url })
         // `at` is when this node served the probe, so its budget can start from
         // there rather than from zero.
         return Array.isArray(data.rows) ? { url, ms: performance.now() - t0, at: Date.now() } : null
@@ -433,12 +447,24 @@ async function loadDao(row) {
 async function pickEndpoint() {
     setStatus('Finding a node…')
 
-    const healthy = (await Promise.all(ENDPOINTS.map(probe)))
+    // Ten TLS handshakes to ten cold hosts, all at once, on a slow connection is
+    // enough to blow a short deadline on every one of them — and the page then
+    // dead-ends claiming the whole chain is unreachable. So a first round that
+    // comes back empty is treated as "too slow", not as "nothing is there", and
+    // gets one more round with a deadline nothing healthy should ever miss.
+    let healthy = (await Promise.all(ENDPOINTS.map((u) => probe(u, PROBE_TIMEOUT))))
         .filter(Boolean)
-        .sort((a, b) => a.ms - b.ms)
 
     if (!healthy.length) {
-        setStatus('No WAX node answered. Check the connection and reload.', 'error')
+        setStatus('Nothing answered in time — trying again more patiently…')
+        healthy = (await Promise.all(ENDPOINTS.map((u) => probe(u, PROBE_RETRY_TIMEOUT))))
+            .filter(Boolean)
+    }
+
+    healthy.sort((a, b) => a.ms - b.ms)
+
+    if (!healthy.length) {
+        setStatus('No WAX node answered.', 'error', { retry: true })
         return false
     }
 
@@ -1999,14 +2025,19 @@ function buildDetails(dao) {
         </section>`
 
     // ── proposals
+    //
+    // Keyed by `proposal_name`. A msig proposal has no `proposal_id` — that was
+    // the field on prop.worlds, and reading it here returned undefined for every
+    // row, so `chosen` was always empty and both buttons stayed disabled however
+    // many boxes were ticked. The tick itself worked, which is what made it look
+    // like a button bug rather than a key mismatch.
     const shown = (props ?? []).filter(propMatches)
-    const chosen = shown.filter((p) => pickedProposals.has(p.proposal_id))
+    const chosen = shown.filter((p) => pickedProposals.has(p.proposal_name))
     const approvable = chosen.filter((p) => canApprove(p, amCustodian))
     const runnable = chosen.filter(canExecute)
-    // Anyone can select: approving needs a seat, executing needs to be the
-    // proposer (startwork) or nobody in particular (finalize). Which of those
-    // applies is per row, so the buttons count what the selection can actually
-    // do rather than assuming one rule for the lot.
+    // Anyone may select. Approving needs a seat on this council; executing needs
+    // the proposal to be open and unexpired. Both are per row, so the buttons
+    // count what the selection can actually do rather than assuming one rule.
     const canPick = !!session
     // Raising one is a custodian's job, and setperiodlen needs the owner's
     // authority — which is exactly what a proposal collects.
@@ -2375,7 +2406,8 @@ setWalletChrome()
 // countdown painted by any render begins moving immediately.
 setInterval(tickCountdowns, 1000)
 
-;(async () => {
+// Named, so the retry button can run it again instead of asking for a reload.
+async function boot() {
     if (!await pickEndpoint()) return
 
     // The councils do not depend on who you are, so the restore runs alongside
@@ -2390,4 +2422,6 @@ setInterval(tickCountdowns, 1000)
     // the page back.
     await restoring
     await loadPosition()
-})()
+}
+
+boot()
