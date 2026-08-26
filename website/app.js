@@ -415,6 +415,12 @@ async function loadDao(row) {
         // The contract refuses a period shorter than any pending-period delay that
         // has been set. Absent from every DAO today, so it defaults to nothing.
         dao.pendingPeriodDelay = Number(g.pending_period_delay) || 0
+        // How many custodian signatures satisfy the owner's "high" permission,
+        // which is what a msig proposal ultimately needs. The owner's "active"
+        // permission just delegates to "high" with a threshold of 1, so "high"
+        // is the real bar — 3 on every DAO today, and the same number dacglobals
+        // calls auth_threshold_high.
+        dao.approvalThreshold = Number(g.auth_threshold_high) || 3
 
         // The contract seats candidates off that same index, so leaving these in
         // primary-key order would print a council in an order the chain does not
@@ -1707,12 +1713,25 @@ function propMatches(p) {
         : p.state === MSIG_OPEN && !isExpired(p)
 }
 
-// Approving needs the signer to be one of the accounts the proposal asks for,
-// which in practice is the seated council. Executing is open — but only once the
-// approvals satisfy the requested permission and while the transaction is still
-// inside its expiry.
-const canApprove = (p, amCustodian) => amCustodian && p.state === MSIG_OPEN
-const canExecute = (p) => p.state === MSIG_OPEN && !isExpired(p)
+const approvalsOf = (p) => p.approvals?.provided_approvals ?? []
+const approvalCount = (p) => approvalsOf(p).length
+
+// An approval is recorded per account, so signing one twice is wasted — the
+// contract already holds this account's signature.
+const approvedByMe = (p) =>
+    !!session && approvalsOf(p).some((a) => String(a.level?.actor ?? '') === String(session.actor))
+
+// Approving needs a seat on this council, an open proposal, and — the point of
+// this rule — no approval from this account already on file.
+const canApprove = (p, amCustodian) =>
+    amCustodian && p.state === MSIG_OPEN && !approvedByMe(p)
+
+// Executing needs the collected approvals to actually satisfy the permission the
+// proposal asks for. That threshold is the owner's "high" permission, so a
+// proposal short of it cannot run however open it looks; sending exec anyway
+// just burns a transaction on a guaranteed rejection.
+const canExecute = (p, dao) =>
+    p.state === MSIG_OPEN && !isExpired(p) && approvalCount(p) >= (dao?.approvalThreshold ?? 3)
 
 // ── Proposing a new election period ───────────────────────────────────────
 //
@@ -2034,10 +2053,12 @@ function buildDetails(dao) {
     const shown = (props ?? []).filter(propMatches)
     const chosen = shown.filter((p) => pickedProposals.has(p.proposal_name))
     const approvable = chosen.filter((p) => canApprove(p, amCustodian))
-    const runnable = chosen.filter(canExecute)
-    // Anyone may select. Approving needs a seat on this council; executing needs
-    // the proposal to be open and unexpired. Both are per row, so the buttons
-    // count what the selection can actually do rather than assuming one rule.
+    const runnable = chosen.filter((p) => canExecute(p, dao))
+    const need = dao.approvalThreshold ?? 3
+    // Anyone may select. Approving skips anything this account has already
+    // signed; executing skips anything short of the threshold. Both are per row,
+    // so the buttons count what the selection can actually do rather than
+    // assuming one rule applies to the lot.
     const canPick = !!session
     // Raising one is a custodian's job, and setperiodlen needs the owner's
     // authority — which is exactly what a proposal collects.
@@ -2105,9 +2126,14 @@ function buildDetails(dao) {
                 ${shown.map((p) => {
                     const on = pickedProposals.has(p.proposal_name)
                     const exp = msigExpiry(p.packed_transaction)
-                    const got = p.approvals?.provided_approvals?.length ?? 0
-                    const want = p.approvals?.requested_approvals?.length ?? 0
+                    const got = approvalCount(p)
+                    const mine = approvedByMe(p)
                     const title = msigTitle(p)
+                    // Counted against the threshold, not against
+                    // `requested_approvals`. That array holds a single entry —
+                    // the owner permission — so the old denominator rendered
+                    // "2 / 1", which reads as more approvals than were asked for.
+                    const enough = got >= need
                     return `<tr class="${on ? 'is-picked' : ''}">
                         ${canPick ? `<td><input type="checkbox" data-prop="${esc(p.proposal_name)}"
                              ${on ? 'checked' : ''}></td>` : ''}
@@ -2116,8 +2142,10 @@ function buildDetails(dao) {
                             <span class="d-dim">${esc(p.proposal_name)} · by ${esc(p.proposer)}</span>
                         </td>
                         <td><span class="pill is-${STATE_CLASS[p.state] ?? 'open'}">${
-                            esc(STATE_LABEL[p.state] ?? `state ${p.state}`)}</span></td>
-                        <td class="num">${got}${want ? ` <span class="d-dim">/ ${want}</span>` : ''}</td>
+                            esc(STATE_LABEL[p.state] ?? `state ${p.state}`)}</span>
+                            ${mine ? '<span class="pill is-mine" title="This account has already approved">you</span>' : ''}</td>
+                        <td class="num ${enough ? 'is-enough' : ''}"
+                            title="${got} of ${need} signatures needed">${got} <span class="d-dim">/ ${need}</span></td>
                         <td class="num">${Number.isFinite(exp)
                             ? esc(isoDay(exp)) : '—'}</td>
                     </tr>`
@@ -2130,13 +2158,14 @@ function buildDetails(dao) {
                 <div class="d-actions">
                     <button class="act-go" id="approveProps" type="button"
                         ${busy || !approvable.length ? 'disabled' : ''}
-                        title="voteprop — needs a seat on this council">
+                        title="Signs the ones you have not already approved">
                         Approve ${approvable.length || ''}</button>
                     <button class="act-go" id="execProps" type="button"
                         ${busy || !runnable.length ? 'disabled' : ''}
-                        title="finalize is open to anyone; startwork only to the proposal's own proposer">
+                        title="Runs the ones that already have ${need} approvals">
                         Execute ${runnable.length || ''}</button>
-                    <span class="d-dim">${chosen.length} selected · ${approvable.length} approvable · ${runnable.length} executable by you</span>
+                    <span class="d-dim">${chosen.length} selected${
+                        chosen.length ? ` · ${approvable.length} to approve · ${runnable.length} at ${need}+` : ''}</span>
                 </div>` : ''}
         </section>`
 
@@ -2322,9 +2351,12 @@ detailsEl.addEventListener('click', async (e) => {
     if (approve) {
         const votable = chosen.filter((p) => canApprove(p, amCustodian))
         if (!votable.length) {
-            return detailsNote(
-                'None of the selected proposals can be approved by this account — ' +
-                'approving needs a seat on this council, and the proposal must still be open.', 'error')
+            const already = chosen.filter(approvedByMe).length
+            return detailsNote(already === chosen.length
+                ? `You have already approved ${already === 1 ? 'that one' : 'all of those'}.`
+                : 'None of the selected proposals can be approved by this account — ' +
+                  'approving needs a seat on this council and a proposal that is still open.',
+                'error')
         }
         const actions = votable.map((p) => ({
             account: MSIG_CONTRACT, name: 'approve', authorization: auth(),
@@ -2334,11 +2366,16 @@ detailsEl.addEventListener('click', async (e) => {
             () => refreshProposals(dao))
     }
 
-    const runnable = chosen.filter(canExecute)
+    const runnable = chosen.filter((p) => canExecute(p, dao))
     if (!runnable.length) {
-        return detailsNote(
-            'None of the selected proposals can be executed — an executed, cancelled ' +
-            'or expired proposal cannot run.', 'error')
+        const need = dao.approvalThreshold ?? 3
+        const short = chosen.filter((p) => p.state === MSIG_OPEN && approvalCount(p) < need)
+        return detailsNote(short.length
+            ? `Not enough approvals yet — ${short.length === 1 ? 'that one has' : 'those have'} ` +
+              `${short.map(approvalCount).join(', ')} of the ${need} needed.`
+            : 'None of the selected proposals can be executed — an executed, cancelled ' +
+              'or expired proposal cannot run.',
+            'error')
     }
     const actions = runnable.map((p) => ({
         account: MSIG_CONTRACT, name: 'exec', authorization: auth(),
