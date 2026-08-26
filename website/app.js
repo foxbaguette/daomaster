@@ -2602,7 +2602,7 @@ async function allocatorAuth(name) {
         const acct = await chainCall('get_account', { account_name: name })
         const active = (acct.permissions ?? []).find((p) => p.perm_name === 'active')
         const ra = active?.required_auth
-        const auth = ra
+        const signers = ra
             ? {
                 threshold: ra.threshold,
                 // Approval is requested from the member accounts, not from the
@@ -2614,8 +2614,8 @@ async function allocatorAuth(name) {
                 })),
             }
             : null
-        authCache.set(name, auth)
-        return auth
+        authCache.set(name, signers)
+        return signers
     } catch (err) {
         console.error(`Could not read the permissions of ${name}:`, err)
         authCache.set(name, null)
@@ -2875,7 +2875,7 @@ async function openAllocator(name) {
 function allocFormHtml(name) {
     if (!allocForm) return ''
     const op = ALLOC_OPS[allocForm.op]
-    const auth = authCache.get(name)
+    const signers = authCache.get(name)
     const rows = allocationsCache.get(name) ?? []
     const current = rows.find((r) => r.account === allocForm.to)
     const cfg = current ? pointsCache.get(current.account) : null
@@ -2885,8 +2885,8 @@ function allocFormHtml(name) {
     <div class="d-propose-form alloc-form">
         <div class="act-head">
             <span class="act-label">${esc(op.verb)}${allocForm.to ? ` · ${esc(allocForm.to)}` : ''}</span>
-            <span class="act-hint">${auth
-                ? `needs ${auth.threshold} of ${auth.members.length} signatures`
+            <span class="act-hint">${signers
+                ? `needs ${signers.threshold} of ${signers.members.length} signatures`
                 : 'reading who must sign…'}</span>
         </div>
 
@@ -2921,12 +2921,12 @@ function allocFormHtml(name) {
                 : ''}
         </p>
 
-        ${auth ? `<p class="act-blurb">Approval will be asked of
-            ${auth.members.map((m) => `<code>${esc(m.actor)}</code>`).join(', ')} —
-            <b>${auth.threshold}</b> of them must sign before it can run.</p>` : ''}
+        ${signers ? `<p class="act-blurb">Approval will be asked of
+            ${signers.members.map((m) => `<code>${esc(m.actor)}</code>`).join(', ')} —
+            <b>${signers.threshold}</b> of them must sign before it can run.</p>` : ''}
 
         <div class="d-actions">
-            <button class="act-go" id="alSubmit" type="button" ${busy || !auth ? 'disabled' : ''}>
+            <button class="act-go" id="alSubmit" type="button" ${busy || !signers ? 'disabled' : ''}>
                 Create proposal</button>
             <button class="act-mini" id="alCancel" type="button">cancel</button>
         </div>
@@ -2939,8 +2939,8 @@ const r0 = (s) => s
 async function submitAlloc(name) {
     if (!session || busy || !allocForm) return
     const op = ALLOC_OPS[allocForm.op]
-    const auth = authCache.get(name)
-    if (!auth) return detailsNote('Could not read who has to sign for this allocator.', 'error')
+    const signers = authCache.get(name)
+    if (!signers) return detailsNote('Could not read who has to sign for this allocator.', 'error')
 
     const to = (allocForm.op === 'new' ? $('alTo')?.value : allocForm.to)?.trim()
     if (!to) return detailsNote('Name the recipient account.', 'error')
@@ -2985,7 +2985,7 @@ async function submitAlloc(name) {
                 data: {
                     proposer: String(session.actor),
                     proposal_name: proposalName().slice(0, 12),
-                    requested: auth.members.map((m) => ({ actor: m.actor, permission: m.permission })),
+                    requested: signers.members.map((m) => ({ actor: m.actor, permission: m.permission })),
                     trx: {
                         expiration: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19),
                         ...ref,
@@ -3000,7 +3000,7 @@ async function submitAlloc(name) {
             }],
         }, { broadcast: true })
 
-        detailsNote(`Proposal created — ${auth.threshold} of ${auth.members.length} must now sign it.`, 'ok')
+        detailsNote(`Proposal created — ${signers.threshold} of ${signers.members.length} must now sign it.`, 'ok')
         allocForm = null
         await sleep(2500)
         allocationsCache.delete(name)
