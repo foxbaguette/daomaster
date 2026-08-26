@@ -769,6 +769,54 @@ body.is-details, body.is-modal { overflow: hidden; }
 .d-table b { font-weight: 500; display: block; }
 .d-table td .d-dim { display: block; margin: 2px 0 0; }
 
+/* ── Row hierarchy ───────────────────────────────────────────────────────── */
+/*
+   A 32px badge next to a wall of 13px text made everything else look like a
+   footnote. These are the rungs between them, in the order a reader actually
+   wants them: what it is, who raised it, then the id — which is a random twelve
+   characters and the least useful thing in the row, so it goes last and smallest
+   rather than leading the line as it used to.
+*/
+
+.row-dao {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: var(--text);
+    line-height: 1.2;
+}
+
+.row-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text);
+    line-height: 1.3;
+}
+
+.row-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    margin-top: 5px;
+}
+
+/* The proposer is a real account someone has to judge, not metadata. */
+.who {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: var(--text-muted);
+}
+
+.row-id {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-top: 3px;
+}
+.row-meta .row-id { margin-top: 0; }
+
 .d-table input[type="checkbox"] {
     accent-color: var(--gold);
     width: 14px; height: 14px;
@@ -776,12 +824,26 @@ body.is-details, body.is-modal { overflow: hidden; }
 }
 
 .pill {
+    display: inline-block;
     font-family: var(--mono);
-    font-size: 10.5px;
-    padding: 2px 7px;
+    font-size: 12px;
+    padding: 3px 9px;
     border: 1px solid var(--line);
     color: var(--text-muted);
     white-space: nowrap;
+}
+
+/* Whether this account still owes a signature is a decision, not a footnote, so
+   in the to-do list it is sized like one. */
+.pill.is-big {
+    display: block;
+    width: fit-content;
+    margin-left: auto;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    padding: 5px 11px;
 }
 .pill.is-completed   { color: var(--ok); border-color: rgba(74, 214, 160, .35); }
 /* This account is already among the signatures on that proposal. */
@@ -1138,9 +1200,8 @@ body.is-details, body.is-modal { overflow: hidden; }
 /* Waiting on this account. The one thing the view exists to point at. */
 .pill.is-todo {
     color: var(--gold);
-    border-color: rgba(242, 183, 60, .38);
+    border-color: rgba(242, 183, 60, .45);
     background: var(--gold-soft);
-    margin-left: 6px;
 }
 
 /* Raised by a watched account. Says where it came from, not whether it is

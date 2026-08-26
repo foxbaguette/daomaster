@@ -2221,8 +2221,13 @@ function buildDetails(dao) {
                         ${canPick ? `<td><input type="checkbox" data-prop="${esc(p.proposal_name)}"
                              ${on ? 'checked' : ''}></td>` : ''}
                         <td>
-                            <b>${esc(title.length > 90 ? `${title.slice(0, 90)}…` : title)}</b>
-                            <span class="d-dim">${esc(p.proposal_name)} · by ${esc(p.proposer)}</span>
+                            <b class="row-title">${esc(title.length > 90 ? `${title.slice(0, 90)}…` : title)}</b>
+                            <span class="row-meta">
+                                <span class="who" title="Proposer">${esc(p.proposer)}</span>
+                                ${WATCHED.has(p.proposer)
+                                    ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                                <span class="row-id">${esc(p.proposal_name)}</span>
+                            </span>
                         </td>
                         <td><span class="pill is-${STATE_CLASS[p.state] ?? 'open'}">${
                             esc(STATE_LABEL[p.state] ?? `state ${p.state}`)}</span>
@@ -2603,19 +2608,21 @@ function buildTodo() {
                 const title = msigTitle(p)
                 return `<tr class="${on ? 'is-picked' : ''}${mine ? ' is-done' : ''}">
                     <td><input type="checkbox" data-todo="${esc(key)}" ${on ? 'checked' : ''}></td>
-                    <td><b>${esc(dao.title)}</b>
-                        <span class="d-dim">${esc(dao.symbol)}</span></td>
+                    <td><b class="row-dao">${esc(dao.title)}</b>
+                        <span class="row-id">${esc(dao.symbol)}</span></td>
                     <td>
-                        <b>${esc(title.length > 80 ? `${title.slice(0, 80)}…` : title)}</b>
-                        <span class="d-dim">${esc(p.proposal_name)} · by ${esc(p.proposer)}
+                        <b class="row-title">${esc(title.length > 80 ? `${title.slice(0, 80)}…` : title)}</b>
+                        <span class="row-meta">
+                            <span class="who" title="Proposer">${esc(p.proposer)}</span>
                             ${byMc ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                            <span class="row-id">${esc(p.proposal_name)}</span>
                         </span>
                     </td>
                     ${approvalCell(p, need)}
                     <td class="num">${mine
-                        ? '<span class="pill is-mine" title="You have already approved this">approved</span>'
-                        : '<span class="pill is-todo">needs you</span>'}<br>
-                        <span class="d-dim">${esc(isoDay(msigExpiry(p.packed_transaction)))}</span></td>
+                        ? '<span class="pill is-mine is-big" title="You have already approved this">approved</span>'
+                        : '<span class="pill is-todo is-big">needs you</span>'}
+                        <span class="row-id">expires ${esc(isoDay(msigExpiry(p.packed_transaction)))}</span></td>
                 </tr>`
             }).join('') || `<tr><td colspan="5" class="d-dim">${
                 loading ? 'Reading proposals…'
