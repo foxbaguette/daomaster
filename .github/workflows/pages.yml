@@ -3,12 +3,13 @@ name: Deploy DAO Master to Pages
 # Pages can only serve a repo's root or its /docs folder, and the site lives in
 # website/. Publishing through Actions keeps the folder named for what it holds
 # instead of renaming it to satisfy the host.
+# No `paths:` filter. It was scoped to website/** and twice failed to fire on
+# pushes that did change website/**, leaving main deployed several commits
+# behind with no failure to notice. The job takes twenty seconds; running it on
+# every push to main is far cheaper than a deploy that silently does not happen.
 on:
   push:
     branches: [main]
-    paths:
-      - 'website/**'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
