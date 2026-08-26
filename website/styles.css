@@ -1243,6 +1243,16 @@ body.is-details, body.is-modal { overflow: hidden; }
 .d-table td.is-lapsed { color: var(--text-faint); }
 .d-table td.is-lapsed .row-id { color: var(--danger); }
 
+.alloc-form { margin-bottom: 16px; }
+.alloc-form .cp-field { max-width: 340px; }
+.alloc-form code { font-family: var(--mono); color: var(--text-muted); }
+
+.alloc-actions { white-space: nowrap; }
+.alloc-actions .act-mini + .act-mini { margin-left: 5px; }
+
+/* A derived figure, not one read straight off a table. */
+.d-table td .row-id { text-transform: none; }
+
 .empty-note {
     grid-column: 1 / -1;
     padding: 40px 0;

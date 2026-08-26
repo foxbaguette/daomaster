@@ -279,6 +279,22 @@ async function getRows(code, scope, table, extra = {}) {
     return out
 }
 
+// Any chain endpoint other than get_table_rows, through the same node pool.
+async function chainCall(path, body) {
+    let lastErr
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const node = await acquireNode()
+        try {
+            return await rawPost(body, node.url, 15000, path)
+        } catch (err) {
+            lastErr = err
+        } finally {
+            noteRequest()
+        }
+    }
+    throw lastErr
+}
+
 // Contract ABIs, fetched once each. Needed only to serialize the inner action of
 // a proposal, so this is a cold path — but it goes through the same node pool as
 // everything else rather than picking a node of its own.
@@ -2415,6 +2431,21 @@ detailsEl.addEventListener('click', async (e) => {
     // that failed to load would have left the back button dead.
     if (e.target.closest('#detailsBack')) return closeDetails()
 
+    // Allocator budget changes. The op buttons open the form; the form submits.
+    const allocOp = e.target.closest('[data-alloc-op]')
+    if (allocOp) {
+        allocForm = {
+            op: allocOp.dataset.allocOp,
+            to: allocOp.dataset.to ?? '',
+            amount: '',
+            days: 30,
+        }
+        detailsNote(null)
+        return renderDetails()
+    }
+    if (e.target.closest('#alCancel')) { allocForm = null; return renderDetails() }
+    if (e.target.closest('#alSubmit')) return submitAlloc(detailsId)
+
     const dao = daoById(detailsId)
     if (!dao) return
 
@@ -2556,6 +2587,54 @@ function durationDays(v) {
     return n >= 86400 ? Math.round(n / 86400) : n
 }
 
+// Who has to sign for an allocator to act. These are ordinary account multisigs
+// rather than DAO councils, so the answer is the account's own `active`
+// permission: its member accounts and how many of them the threshold wants.
+//
+//   trilara.dac  3 of 5     khaurex.dac  4 of 6
+//   megalos.dac  4 of 6     synthar.dac  4 of 6 — and its members are the
+//                                        planet DACs themselves
+const authCache = new Map()
+
+async function allocatorAuth(name) {
+    if (authCache.has(name)) return authCache.get(name)
+    try {
+        const acct = await chainCall('get_account', { account_name: name })
+        const active = (acct.permissions ?? []).find((p) => p.perm_name === 'active')
+        const ra = active?.required_auth
+        const auth = ra
+            ? {
+                threshold: ra.threshold,
+                // Approval is requested from the member accounts, not from the
+                // allocator itself — they are the ones who can sign.
+                members: (ra.accounts ?? []).map((a) => ({
+                    actor: a.permission.actor,
+                    permission: a.permission.permission,
+                    weight: a.weight,
+                })),
+            }
+            : null
+        authCache.set(name, auth)
+        return auth
+    } catch (err) {
+        console.error(`Could not read the permissions of ${name}:`, err)
+        authCache.set(name, null)
+        return null
+    }
+}
+
+// A reference to a recent irreversible block. eosio.msig proposals carry real
+// TAPOS — unlike msig.worlds, where every live proposal has zeroes — so this
+// matches what the working proposals on chain actually do.
+async function tapos() {
+    const info = await chainCall('get_info', {})
+    const num = info.last_irreversible_block_num
+    const block = await chainCall('get_block', { block_num_or_id: num })
+    // ref_block_prefix is the second 32-bit word of the block id, little endian.
+    const prefix = parseInt(String(block.id).slice(16, 24).match(/../g).reverse().join(''), 16)
+    return { ref_block_num: num & 0xffff, ref_block_prefix: prefix }
+}
+
 async function loadAllocators() {
     try {
         allocators = await getRows(POINTS_CONTRACT, POINTS_CONTRACT, 'allocators', { limit: 200 })
@@ -2566,22 +2645,44 @@ async function loadAllocators() {
     $('countMsig').textContent = allocators.length || ''
 }
 
-// One allocator's allocations, plus the config of every account it allocates to.
-async function loadAllocator(name) {
+// What every allocator sends a given recipient, per day. pointsconfig records
+// only the recipient's own totals — there is no per-funder breakdown anywhere on
+// chain — so attributing spend to one allocator means knowing what share of the
+// recipient's funding that allocator provides.
+function fundingShare(recipient, allocator) {
+    let total = 0
+    let mine = 0
+    for (const a of allocators) {
+        for (const r of allocationsCache.get(a.allocator) ?? []) {
+            if (r.account !== recipient) continue
+            const v = Number(r.allocated) || 0
+            total += v
+            if (a.allocator === allocator) mine = v
+        }
+    }
+    return { mine, total, share: total > 0 ? mine / total : 0 }
+}
+
+async function loadAllocations(name) {
     if (allocationsCache.has(name)) return
-    let rows = []
     try {
-        rows = await getRows(POINTS_CONTRACT, name, 'allocations', { limit: 200 })
+        allocationsCache.set(name, await getRows(POINTS_CONTRACT, name, 'allocations', { limit: 200 }))
     } catch (err) {
         console.error(`Could not read allocations for ${name}:`, err)
         allocationsCache.set(name, null)
-        return
     }
-    allocationsCache.set(name, rows)
+}
 
-    // A recipient funded by several allocators is only read once.
-    const wanted = rows.map((r) => r.account).filter((a) => !pointsCache.has(a))
-    await mapLimit([...new Set(wanted)], CONCURRENCY, async (account) => {
+// One allocator's allocations, the config of every account it funds, and — so
+// the share can be worked out — every OTHER allocator's allocations too. That is
+// four small reads, and without them a recipient's spend cannot be attributed.
+async function loadAllocator(name) {
+    await mapLimit(allocators.map((a) => a.allocator), CONCURRENCY, loadAllocations)
+    const rows = allocationsCache.get(name)
+    if (!rows) return
+
+    const wanted = [...new Set(rows.map((r) => r.account))].filter((a) => !pointsCache.has(a))
+    await mapLimit(wanted, CONCURRENCY, async (account) => {
         try {
             const [cfg] = await getRows(POINTS_CONTRACT, account, 'pointsconfig', { limit: 1 })
             pointsCache.set(account, cfg ?? null)
@@ -2635,6 +2736,9 @@ function allocatorHtml(a) {
 function buildAllocatorDetails(name) {
     const a = allocators.find((x) => x.allocator === name)
     const rows = allocationsCache.get(name)
+    // Anyone signed in may raise a proposal; only the allocator's own members can
+    // approve it, and the chain enforces that.
+    const canAllocate = !!session
 
     const body = rows === null
         ? '<p class="panel-empty">Could not read this allocator\'s allocations.</p>'
@@ -2665,29 +2769,52 @@ function buildAllocatorDetails(name) {
                 }
                 const ends = Date.parse(`${c.period_end}Z`)
                 const lapsed = Number.isFinite(ends) && ends < Date.now()
-                const days = durationDays(c.period_duration)
-                const spent = Number(c.period_total)
-                const cap = Number(c.period_budget)
-                const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0
+                const days = durationDays(c.period_duration) ?? 30
+                const { share, total } = fundingShare(r.account, name)
+
+                // What THIS allocator puts in over a period: its per-day
+                // allocation across the period's days. That is exact — it is
+                // this allocator's own number, not a slice of someone else's.
+                const myBudget = Number(r.allocated) * days
+
+                // Spend has no per-funder record, so it is apportioned by share
+                // of funding. Marked as a share, with the recipient's own total
+                // on hover, because it is derived rather than read.
+                const myRunning = Number(c.running_total) * share
+                const mySpent = Number(c.period_total) * share
+                const pct = myBudget > 0 ? Math.min(100, (mySpent / myBudget) * 100) : 0
+                const sharePct = (share * 100).toFixed(share >= 0.1 ? 0 : 1)
+
                 return `<tr>
                     <td>
                         <b class="row-dao">${esc(r.account)}</b>
-                        <span class="row-id">${c.active ? 'active' : 'inactive'}</span>
+                        <span class="row-id">${c.active ? 'active' : 'inactive'} · ${
+                            esc(sharePct)}% of its funding</span>
                     </td>
                     <td class="num">${esc(points(r.allocated))}</td>
                     <td><span class="pill ${c.debug_mode ? 'is-debug' : 'is-live'}"
                         title="debug_mode = ${c.debug_mode ? 1 : 0}">${
                         c.debug_mode ? 'debug' : 'live'}</span></td>
-                    <td class="num">${esc(points(c.running_total))}</td>
-                    <td class="num">${esc(plain(c.period_total))}
-                        <span class="row-id">${pct.toFixed(0)}% of budget</span></td>
-                    <td class="num">${esc(plain(c.period_budget))}</td>
+                    <td class="num" title="Apportioned by this allocator's ${esc(sharePct)}% share. ${
+                        esc(r.account)} has spent ${esc(points(c.running_total))} in total.">
+                        ${esc(points(myRunning))}<span class="row-id">share</span></td>
+                    <td class="num" title="Apportioned by share. ${esc(r.account)} has spent ${
+                        esc(points(c.period_total))} this period.">
+                        ${esc(points(mySpent))}<span class="row-id">${pct.toFixed(0)}% of yours</span></td>
+                    <td class="num" title="${esc(points(r.allocated))} per day over ${days} days. ${
+                        esc(r.account)} has ${esc(points(c.period_budget))} from all funders.">
+                        ${esc(points(myBudget))}<span class="row-id">yours</span></td>
                     <td class="num ${lapsed ? 'is-lapsed' : ''}">
                         ${esc(isoDay(ends))}
-                        <span class="row-id">${lapsed ? 'lapsed' : 'open'} · ${
-                            days ? `${days}d period` : 'period ?'}</span></td>
+                        <span class="row-id">${lapsed ? 'lapsed' : 'open'} · ${days}d period</span></td>
+                    ${canAllocate ? `<td class="num alloc-actions">
+                        <button class="act-mini" data-alloc-op="add" data-to="${esc(r.account)}"
+                                type="button">increase</button>
+                        <button class="act-mini" data-alloc-op="sub" data-to="${esc(r.account)}"
+                                type="button">decrease</button>
+                    </td>` : ''}
                 </tr>`
-            }).join('') || '<tr><td colspan="7" class="d-dim">This allocator has no allocations.</td></tr>'}
+            }).join('') || `<tr><td colspan="${canAllocate ? 8 : 7}" class="d-dim">This allocator has no allocations.</td></tr>`}
             </tbody>
         </table>
         </div>`
@@ -2709,19 +2836,186 @@ function buildAllocatorDetails(name) {
                 <span class="d-dim">${rows ? `${rows.length} recipient${
                     rows.length === 1 ? '' : 's'}` : ''}</span>
             </h3>
+            ${canAllocate ? (allocForm ? allocFormHtml(name)
+                : '<div class="d-propose"><button class="card-btn" data-alloc-op="new" type="button">New allocation</button></div>') : ''}
             ${body}
         </section>
     </div>`
 }
 
+// The three ways an allocator can move a budget, all requiring its own
+// authority, all therefore going through a multisig proposal.
+//
+//   setbudget    creates a NEW allocation. Refuses if a pointsconfig already
+//                exists for that account, so it cannot be used to change one.
+//   addbudget    increases an existing one, reusing the recipient's own n_days.
+//   withdrawbudg decreases; omitting the amount withdraws the whole period.
+//
+// `budget` throughout is the PERIOD total, which the contract divides by n_days
+// to get the per-day allocation it stores.
+const ALLOC_OPS = {
+    add: { action: 'addbudget', verb: 'Increase' },
+    sub: { action: 'withdrawbudg', verb: 'Decrease' },
+    new: { action: 'setbudget', verb: 'New allocation' },
+}
+
+let allocForm = null   // { op, to, amount, days }
+
 async function openAllocator(name) {
     detailsId = name
     detailsKind = 'allocator'
+    allocForm = null
     closePanel()
     closeTodo()
     renderDetails()
-    await loadAllocator(name)
+    await Promise.all([loadAllocator(name), allocatorAuth(name)])
     if (detailsId === name) renderDetails()
+}
+
+function allocFormHtml(name) {
+    if (!allocForm) return ''
+    const op = ALLOC_OPS[allocForm.op]
+    const auth = authCache.get(name)
+    const rows = allocationsCache.get(name) ?? []
+    const current = rows.find((r) => r.account === allocForm.to)
+    const cfg = current ? pointsCache.get(current.account) : null
+    const days = durationDays(cfg?.period_duration) ?? 30
+
+    return `
+    <div class="d-propose-form alloc-form">
+        <div class="act-head">
+            <span class="act-label">${esc(op.verb)}${allocForm.to ? ` · ${esc(allocForm.to)}` : ''}</span>
+            <span class="act-hint">${auth
+                ? `needs ${auth.threshold} of ${auth.members.length} signatures`
+                : 'reading who must sign…'}</span>
+        </div>
+
+        ${allocForm.op === 'new' ? `
+            <label class="cp-field">
+                <span>Recipient account</span>
+                <input id="alTo" type="text" value="${esc(allocForm.to)}"
+                       placeholder="theminergame" spellcheck="false">
+            </label>
+            <label class="cp-field">
+                <span>Period length in days (1–60)</span>
+                <input id="alDays" type="number" min="1" max="60" value="${allocForm.days}">
+            </label>` : ''}
+
+        <label class="cp-field">
+            <span>${allocForm.op === 'sub'
+                ? 'Amount to withdraw for the period'
+                : 'Amount to add for the period'}</span>
+            <input id="alAmount" type="text" inputmode="decimal" value="${esc(allocForm.amount)}"
+                   placeholder="0">
+        </label>
+
+        <p class="act-blurb">
+            Shown everywhere on this page at a tenth of the stored value, so this is
+            multiplied by ten before it is sent.
+            ${allocForm.op !== 'new' && current
+                ? `${esc(r0(current.account))} currently gets
+                   <b>${esc(points(Number(current.allocated) * days))}</b> per ${days}-day period.`
+                : ''}
+            ${allocForm.op === 'new'
+                ? 'setbudget only creates allocations — it is refused if this account already has one.'
+                : ''}
+        </p>
+
+        ${auth ? `<p class="act-blurb">Approval will be asked of
+            ${auth.members.map((m) => `<code>${esc(m.actor)}</code>`).join(', ')} —
+            <b>${auth.threshold}</b> of them must sign before it can run.</p>` : ''}
+
+        <div class="d-actions">
+            <button class="act-go" id="alSubmit" type="button" ${busy || !auth ? 'disabled' : ''}>
+                Create proposal</button>
+            <button class="act-mini" id="alCancel" type="button">cancel</button>
+        </div>
+    </div>`
+}
+
+// Just the account name; kept as a function so the template stays readable.
+const r0 = (s) => s
+
+async function submitAlloc(name) {
+    if (!session || busy || !allocForm) return
+    const op = ALLOC_OPS[allocForm.op]
+    const auth = authCache.get(name)
+    if (!auth) return detailsNote('Could not read who has to sign for this allocator.', 'error')
+
+    const to = (allocForm.op === 'new' ? $('alTo')?.value : allocForm.to)?.trim()
+    if (!to) return detailsNote('Name the recipient account.', 'error')
+
+    // Everything on this page is shown at a tenth of the stored value, so the
+    // figure typed here is scaled back up before it reaches the chain.
+    const shown = Number(String($('alAmount')?.value ?? '').replace(/,/g, ''))
+    if (!Number.isFinite(shown) || shown <= 0) return detailsNote('Enter an amount above zero.', 'error')
+    const budget = Math.round(shown * 10)
+
+    const days = allocForm.op === 'new' ? Math.round(Number($('alDays')?.value) || 30) : null
+    if (days !== null && (days < 1 || days > 60)) {
+        return detailsNote('The contract only accepts a period of 1 to 60 days.', 'error')
+    }
+
+    const data = allocForm.op === 'new'
+        ? { allocator: name, points_manager: to, budget, n_days: days, batch_process: true }
+        : allocForm.op === 'sub'
+            ? { allocator: name, points_manager: to, budget }
+            : { allocator: name, points_manager: to, budget }
+
+    busy = true
+    renderDetails()
+    detailsNote('Building the proposal…', 'work')
+
+    try {
+        const abi = await getAbi(POINTS_CONTRACT)
+        const inner = {
+            account: POINTS_CONTRACT,
+            name: op.action,
+            authorization: [{ actor: name, permission: 'active' }],
+            data: String(Serializer.encode({ abi, type: op.action, object: data })),
+        }
+        const ref = await tapos()
+
+        // eosio.msig, not msig.worlds: an allocator is a plain account multisig
+        // with no dac_id, and every one of these on chain has gone through the
+        // system contract.
+        await session.transact({
+            actions: [{
+                account: 'eosio.msig', name: 'propose', authorization: auth(),
+                data: {
+                    proposer: String(session.actor),
+                    proposal_name: proposalName().slice(0, 12),
+                    requested: auth.members.map((m) => ({ actor: m.actor, permission: m.permission })),
+                    trx: {
+                        expiration: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19),
+                        ...ref,
+                        max_net_usage_words: 0,
+                        max_cpu_usage_ms: 0,
+                        delay_sec: 0,
+                        context_free_actions: [],
+                        actions: [inner],
+                        transaction_extensions: [],
+                    },
+                },
+            }],
+        }, { broadcast: true })
+
+        detailsNote(`Proposal created — ${auth.threshold} of ${auth.members.length} must now sign it.`, 'ok')
+        allocForm = null
+        await sleep(2500)
+        allocationsCache.delete(name)
+        pointsCache.clear()
+        await loadAllocator(name)
+    } catch (err) {
+        if (isUserCancel(err)) detailsNote('Cancelled.')
+        else {
+            console.error('Allocation proposal failed:', err)
+            detailsNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderDetails()
+    }
 }
 
 // ── Create a proposal ─────────────────────────────────────────────────────
