@@ -2632,6 +2632,22 @@ async function allocatorAuth(name) {
     }
 }
 
+// Which of an allocator's signers are themselves DAOs. A DAO cannot press
+// approve — it acts only through its council — so each of these needs its own
+// msig.worlds proposal carrying the approval.
+//
+// Worked out from the directory rather than by naming synthar.dac: a signer is a
+// DAO if it owns one. Today that is synthar alone, whose six signers are the
+// planet DACs; trilara, megalos and khaurex are signed by ordinary accounts and
+// match nothing here. The rule follows the chain rather than a list of names.
+function councilSigners(signers) {
+    if (!signers) return []
+    const byOwner = new Map(daos.map((d) => [d.owner, d]))
+    return signers.members
+        .map((m) => byOwner.get(m.actor))
+        .filter(Boolean)
+}
+
 // A reference to a recent irreversible block. eosio.msig proposals carry real
 // TAPOS — unlike msig.worlds, where every live proposal has zeroes — so this
 // matches what the working proposals on chain actually do.
@@ -2879,6 +2895,7 @@ function allocFormHtml(name) {
     if (!allocForm) return ''
     const op = ALLOC_OPS[allocForm.op]
     const signers = authCache.get(name)
+    const councils = councilSigners(signers)
     const rows = allocationsCache.get(name) ?? []
     const current = rows.find((r) => r.account === allocForm.to)
     const cfg = current ? pointsCache.get(current.account) : null
@@ -2927,6 +2944,11 @@ function allocFormHtml(name) {
         ${signers ? `<p class="act-blurb">Approval will be asked of
             ${signers.members.map((m) => `<code>${esc(m.actor)}</code>`).join(', ')} —
             <b>${signers.threshold}</b> of them must sign before it can run.</p>` : ''}
+        ${councils.length ? `<p class="act-blurb is-note">
+            ${councils.length} of those signers are DAOs and cannot approve directly, so this will
+            also raise a proposal on
+            ${councils.map((d) => `<code>${esc(d.title)}</code>`).join(', ')}
+            for their councils to pass. ${councils.length + 1} proposals in one transaction.</p>` : ''}
 
         <div class="d-actions">
             <button class="act-go" id="alSubmit" type="button" ${busy || !signers ? 'disabled' : ''}>
@@ -2978,32 +3000,104 @@ async function submitAlloc(name) {
             data: String(Serializer.encode({ abi, type: op.action, object: data })),
         }
         const ref = await tapos()
+        const actor = String(session.actor)
+        const outerName = proposalName()
+        const expiry = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19)
 
         // eosio.msig, not msig.worlds: an allocator is a plain account multisig
         // with no dac_id, and every one of these on chain has gone through the
         // system contract.
-        await session.transact({
-            actions: [{
-                account: 'eosio.msig', name: 'propose', authorization: auth(),
-                data: {
-                    proposer: String(session.actor),
-                    proposal_name: proposalName().slice(0, 12),
-                    requested: signers.members.map((m) => ({ actor: m.actor, permission: m.permission })),
-                    trx: {
-                        expiration: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 19),
-                        ...ref,
-                        max_net_usage_words: 0,
-                        max_cpu_usage_ms: 0,
-                        delay_sec: 0,
-                        context_free_actions: [],
-                        actions: [inner],
-                        transaction_extensions: [],
-                    },
+        const actions = [{
+            account: 'eosio.msig', name: 'propose', authorization: auth(),
+            data: {
+                proposer: actor,
+                proposal_name: outerName,
+                requested: signers.members.map((m) => ({ actor: m.actor, permission: m.permission })),
+                trx: {
+                    expiration: expiry,
+                    ...ref,
+                    max_net_usage_words: 0,
+                    max_cpu_usage_ms: 0,
+                    delay_sec: 0,
+                    context_free_actions: [],
+                    actions: [inner],
+                    transaction_extensions: [],
                 },
-            }],
-        }, { broadcast: true })
+            },
+        }]
 
-        detailsNote(`Proposal created — ${signers.threshold} of ${signers.members.length} must now sign it.`, 'ok')
+        // Some of an allocator's signers cannot simply press approve: they are
+        // DAOs, and a DAO acts only through its own council. synthar.dac is one
+        // — its six signers are the planet DACs themselves — so each of those
+        // needs a msig.worlds proposal of its own carrying the approval, for its
+        // custodians to pass in the usual way.
+        //
+        // Worked out from the directory rather than by naming synthar: a signer
+        // is a DAO if it owns one. The other three allocators have none, so they
+        // produce no extra proposals.
+        const councils = councilSigners(signers)
+        if (councils.length) {
+            const msigAbi = await getAbi('eosio.msig')
+            const title = `${op.verb}: ${to} — ${shown.toLocaleString('en-US')}`
+
+            for (const dao of councils) {
+                const approve = {
+                    account: 'eosio.msig',
+                    name: 'approve',
+                    authorization: [{ actor: dao.owner, permission: 'active' }],
+                    data: String(Serializer.encode({
+                        abi: msigAbi, type: 'approve',
+                        object: {
+                            proposer: actor,
+                            proposal_name: outerName,
+                            level: { actor: dao.owner, permission: 'active' },
+                        },
+                    })),
+                }
+                actions.push({
+                    account: MSIG_CONTRACT, name: 'propose', authorization: auth(),
+                    data: {
+                        proposer: actor,
+                        proposal_name: proposalName(),
+                        requested: [{ actor: dao.owner, permission: 'active' }],
+                        dac_id: dao.id,
+                        metadata: [
+                            { key: 'title', value: `Approve ${name} allocation · ${title}` },
+                            {
+                                key: 'description',
+                                value: `Approves ${actor}/${outerName} on eosio.msig, which asks `
+                                    + `${name} to ${op.action} ${budget} for ${to}. `
+                                    + `${name} needs ${signers.threshold} of its `
+                                    + `${signers.members.length} signers, and ${dao.owner} is one of them.`,
+                            },
+                        ],
+                        // msig.worlds dispatches its inner actions itself, so
+                        // these carry no TAPOS — matching every live proposal on
+                        // that contract.
+                        trx: {
+                            expiration: expiry,
+                            ref_block_num: 0,
+                            ref_block_prefix: 0,
+                            max_net_usage_words: 0,
+                            max_cpu_usage_ms: 0,
+                            delay_sec: 0,
+                            context_free_actions: [],
+                            actions: [approve],
+                            transaction_extensions: [],
+                        },
+                    },
+                })
+            }
+        }
+
+        await session.transact({ actions }, { broadcast: true })
+
+        detailsNote(councils.length
+            ? `Proposal created, plus one on each of ${councils.map((d) => d.title).join(', ')} `
+              + `for their councils to approve it. ${signers.threshold} of `
+              + `${signers.members.length} must sign.`
+            : `Proposal created — ${signers.threshold} of ${signers.members.length} must now sign it.`,
+            'ok')
         allocForm = null
         await sleep(2500)
         allocationsCache.delete(name)

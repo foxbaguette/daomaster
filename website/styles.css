@@ -1266,6 +1266,15 @@ body.is-details, body.is-modal { overflow: hidden; }
 .d-table.is-roomy .pill { font-size: 13px; padding: 4px 11px; }
 .d-table.is-roomy .act-mini { font-size: 12px; padding: 5px 10px; }
 
+/* The nested-multisig warning. Not an error, but the reader is about to sign
+   something that creates seven proposals rather than one. */
+.act-blurb.is-note {
+    color: var(--text-muted);
+    border-left: 2px solid rgba(242, 183, 60, .45);
+    padding-left: 10px;
+    margin-top: 10px;
+}
+
 .alloc-form { margin-bottom: 16px; }
 .alloc-form .cp-field { max-width: 340px; }
 .alloc-form code { font-family: var(--mono); color: var(--text-muted); }
