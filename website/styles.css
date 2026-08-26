@@ -1181,6 +1181,77 @@ body.is-details, body.is-modal { overflow: hidden; }
     color: var(--text-muted);
 }
 
+/* ── Allocators ──────────────────────────────────────────────────────────── */
+
+.alloc-figs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    margin-top: 14px;
+    background: var(--line-soft);
+    border: 1px solid var(--line-soft);
+}
+
+.alloc-figs > div { background: var(--panel-in); padding: 10px 12px; }
+
+.alloc-figs dt {
+    font-size: 10px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+
+.alloc-figs dd {
+    font-family: var(--mono);
+    font-size: 17px;
+    color: var(--text);
+    margin-top: 4px;
+}
+
+/* Allocated more than the budget allows. Worth flagging rather than leaving to
+   be spotted by comparing two figures. */
+.alloc-figs dd.is-over { color: var(--danger); }
+
+.alloc-bar {
+    height: 5px;
+    margin-top: 12px;
+    background: rgba(150, 160, 210, .12);
+    border: 1px solid var(--line-soft);
+    position: relative;
+    overflow: hidden;
+    cursor: help;
+}
+.alloc-bar span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: linear-gradient(90deg, rgba(242, 183, 60, .45), var(--gold));
+}
+
+.alloc-note {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-faint);
+    margin-top: 7px;
+}
+
+/* Live versus debug is the difference between points that count and points that
+   do not, so it is not a subtle distinction. */
+.pill.is-live  { color: var(--ok); border-color: rgba(74, 214, 160, .35); background: rgba(74, 214, 160, .07); }
+.pill.is-debug { color: var(--gold); border-color: rgba(242, 183, 60, .40); background: var(--gold-soft); }
+
+/* A period whose end has already passed. */
+.d-table td.is-lapsed { color: var(--text-faint); }
+.d-table td.is-lapsed .row-id { color: var(--danger); }
+
+.empty-note {
+    grid-column: 1 / -1;
+    padding: 40px 0;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-faint);
+}
+
 /* ── Create a proposal ───────────────────────────────────────────────────── */
 
 /* A secondary action beside the two that sign things. Same shape, no gold — it

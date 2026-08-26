@@ -926,9 +926,24 @@ function daoHtml(dao) {
 }
 
 function render() {
-    daosEl.innerHTML = daos.filter((d) => d.group === group).map(daoHtml).join('')
+    // The MSIG tab shows a different kind of thing entirely — point allocators
+    // rather than councils — so it renders from its own list.
+    daosEl.innerHTML = group === 'msig'
+        ? (allocators.length
+            ? allocators.map(allocatorHtml).join('')
+            : `<p class="empty-note">No allocators found on ${POINTS_CONTRACT}.</p>`)
+        : daos.filter((d) => d.group === group).map(daoHtml).join('')
+
     refreshVotesChrome()
     todoChrome()
+
+    // Neither applies to allocators: there are no votes to refresh and no
+    // council seat that could owe a signature.
+    if (group === 'msig') {
+        $('refreshVotesBtn').hidden = true
+        $('todoBtn').hidden = true
+    }
+
     const open = daosEl.querySelector(`.dao[data-id="${selectedId}"]`)
     if (open) open.classList.add('is-selected')
     // The panel reads the same `position` map the cards do, so anything that
@@ -1734,6 +1749,7 @@ let proposalsCache = new Map()
 let propFilter = 'active'
 // Proposals first: they are the half with something to act on, and they go
 // stale. The council is a standing fact you can read whenever.
+let detailsKind = 'dao'      // dao council, or point allocator
 let detailsTab = 'proposals'   // proposals, or council & candidates
 let periodFormOpen = false   // the election-period proposal form
 let pickedCandidates = new Set()
@@ -1980,6 +1996,7 @@ async function loadDetails(dao) {
 async function openDetails(id) {
     closeTodo()
     detailsId = id
+    detailsKind = 'dao'
     detailsTab = 'proposals'
     periodFormOpen = false
 
@@ -2037,18 +2054,21 @@ function fmtPower(raw, dao) {
 // nothing in it and no way out. Revealing happens AFTER the html exists.
 function renderDetails() {
     if (!detailsId) return
-    const dao = daoById(detailsId)
-    if (!dao) return closeDetails()
-
     let html
     try {
-        html = buildDetails(dao)
+        if (detailsKind === 'allocator') {
+            html = buildAllocatorDetails(detailsId)
+        } else {
+            const dao = daoById(detailsId)
+            if (!dao) return closeDetails()
+            html = buildDetails(dao)
+        }
     } catch (err) {
         console.error('Could not render the details view:', err)
         html = `<div class="d-inner">
             <header class="d-head">
-                <button class="btn btn-ghost" id="detailsBack" type="button">← All DAOs</button>
-                <div class="d-title"><h2>${esc(dao.title)}</h2></div>
+                <button class="btn btn-ghost" id="detailsBack" type="button">← Back</button>
+                <div class="d-title"><h2>${esc(String(detailsId))}</h2></div>
             </header>
             <p class="panel-note is-error">This view could not be drawn: ${esc(String(err.message ?? err))}</p>
         </div>`
@@ -2490,6 +2510,218 @@ async function refreshProposals(dao) {
     proposalsCache.delete(dao.id)
     pickedProposals = new Set()
     await loadDetails(dao)
+}
+
+// ── MSIG groups: the point allocators ─────────────────────────────────────
+//
+// A separate system from the DAO councils, on ptpxy.worlds — the pointsproxy
+// contract, whose source is in Alien-Worlds/alienworlds-contracts-open-source
+// under contracts/pointsproxy.
+//
+//   allocators   scope = the contract   who allocates, and their budget
+//   allocations  scope = the allocator  who they allocate to, and how much
+//   pointsconfig scope = the RECIPIENT  that recipient's period and spend
+//
+// pointsconfig is keyed by the account receiving points, not by the pair, so
+// several allocators funding the same recipient all read the same config.
+// magordefense is funded by all four and shows identical figures under each.
+
+const POINTS_CONTRACT = 'ptpxy.worlds'
+
+let allocators = []
+let allocationsCache = new Map()   // allocator -> rows
+let pointsCache = new Map()        // recipient -> pointsconfig
+
+// Points are held at ten times their face value throughout this contract.
+const points = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.trunc(n / 10).toLocaleString('en-US') : '—'
+}
+
+// The same figures that are not scaled — period_total and period_budget are
+// shown as the contract stores them.
+const plain = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.trunc(n).toLocaleString('en-US') : '—'
+}
+
+// `period_duration` is documented as days and defaults to 30, but the contract's
+// own migrate() copies the OLD globals value — which was seconds, defaulting to
+// 30*24*60*60 — straight into it. So a row that has never been rewritten since
+// carries 2592000 where 30 is meant. ameet.worlds is one. Anything at a day or
+// more is read as seconds; anything smaller is already days.
+function durationDays(v) {
+    const n = Number(v)
+    if (!Number.isFinite(n) || n <= 0) return null
+    return n >= 86400 ? Math.round(n / 86400) : n
+}
+
+async function loadAllocators() {
+    try {
+        allocators = await getRows(POINTS_CONTRACT, POINTS_CONTRACT, 'allocators', { limit: 200 })
+    } catch (err) {
+        console.error('Could not read the allocators:', err)
+        allocators = []
+    }
+    $('countMsig').textContent = allocators.length || ''
+}
+
+// One allocator's allocations, plus the config of every account it allocates to.
+async function loadAllocator(name) {
+    if (allocationsCache.has(name)) return
+    let rows = []
+    try {
+        rows = await getRows(POINTS_CONTRACT, name, 'allocations', { limit: 200 })
+    } catch (err) {
+        console.error(`Could not read allocations for ${name}:`, err)
+        allocationsCache.set(name, null)
+        return
+    }
+    allocationsCache.set(name, rows)
+
+    // A recipient funded by several allocators is only read once.
+    const wanted = rows.map((r) => r.account).filter((a) => !pointsCache.has(a))
+    await mapLimit([...new Set(wanted)], CONCURRENCY, async (account) => {
+        try {
+            const [cfg] = await getRows(POINTS_CONTRACT, account, 'pointsconfig', { limit: 1 })
+            pointsCache.set(account, cfg ?? null)
+        } catch (err) {
+            console.error(`Could not read pointsconfig for ${account}:`, err)
+            pointsCache.set(account, null)
+        }
+    })
+}
+
+function allocatorHtml(a) {
+    const budget = Number(a.budget)
+    const used = Number(a.allocated)
+    const pct = budget > 0 ? Math.min(100, (used / budget) * 100) : 0
+    const left = budget - used
+
+    return `
+    <article class="dao" data-alloc="${esc(a.allocator)}">
+        <div class="dao-top">
+            <h2>${esc(a.allocator)}</h2>
+        </div>
+        <p class="dao-id">point allocator</p>
+
+        <dl class="alloc-figs">
+            <div>
+                <dt>Budget</dt>
+                <dd>${esc(points(a.budget))}</dd>
+            </div>
+            <div>
+                <dt>Allocated</dt>
+                <dd class="${used > budget ? 'is-over' : ''}">${esc(points(a.allocated))}</dd>
+            </div>
+            <div>
+                <dt>Unallocated</dt>
+                <dd class="${left < 0 ? 'is-over' : ''}">${esc(points(left))}</dd>
+            </div>
+        </dl>
+
+        <div class="alloc-bar" title="${pct.toFixed(1)}% of the budget allocated">
+            <span style="width:${pct}%"></span>
+        </div>
+        <p class="alloc-note">per day · a period runs 30 days</p>
+
+        <div class="dao-btns">
+            <button class="card-btn is-primary" data-allocdetails="${esc(a.allocator)}"
+                    type="button">Allocations</button>
+        </div>
+    </article>`
+}
+
+function buildAllocatorDetails(name) {
+    const a = allocators.find((x) => x.allocator === name)
+    const rows = allocationsCache.get(name)
+
+    const body = rows === null
+        ? '<p class="panel-empty">Could not read this allocator\'s allocations.</p>'
+        : !rows
+            ? '<p class="panel-empty">Reading…</p>'
+            : `
+        <div class="d-scroll is-tall">
+        <table class="d-table">
+            <thead><tr>
+                <th>Recipient</th>
+                <th class="num">Allocated</th>
+                <th>Mode</th>
+                <th class="num">Running total</th>
+                <th class="num">Period spent</th>
+                <th class="num">Period budget</th>
+                <th class="num">Period ends</th>
+            </tr></thead>
+            <tbody>
+            ${rows.map((r) => {
+                const c = pointsCache.get(r.account)
+                if (!c) {
+                    return `<tr>
+                        <td><b class="row-dao">${esc(r.account)}</b></td>
+                        <td class="num">${esc(points(r.allocated))}</td>
+                        <td colspan="5" class="d-dim">${
+                            c === null ? 'no pointsconfig for this account' : 'reading…'}</td>
+                    </tr>`
+                }
+                const ends = Date.parse(`${c.period_end}Z`)
+                const lapsed = Number.isFinite(ends) && ends < Date.now()
+                const days = durationDays(c.period_duration)
+                const spent = Number(c.period_total)
+                const cap = Number(c.period_budget)
+                const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0
+                return `<tr>
+                    <td>
+                        <b class="row-dao">${esc(r.account)}</b>
+                        <span class="row-id">${c.active ? 'active' : 'inactive'}</span>
+                    </td>
+                    <td class="num">${esc(points(r.allocated))}</td>
+                    <td><span class="pill ${c.debug_mode ? 'is-debug' : 'is-live'}"
+                        title="debug_mode = ${c.debug_mode ? 1 : 0}">${
+                        c.debug_mode ? 'debug' : 'live'}</span></td>
+                    <td class="num">${esc(points(c.running_total))}</td>
+                    <td class="num">${esc(plain(c.period_total))}
+                        <span class="row-id">${pct.toFixed(0)}% of budget</span></td>
+                    <td class="num">${esc(plain(c.period_budget))}</td>
+                    <td class="num ${lapsed ? 'is-lapsed' : ''}">
+                        ${esc(isoDay(ends))}
+                        <span class="row-id">${lapsed ? 'lapsed' : 'open'} · ${
+                            days ? `${days}d period` : 'period ?'}</span></td>
+                </tr>`
+            }).join('') || '<tr><td colspan="7" class="d-dim">This allocator has no allocations.</td></tr>'}
+            </tbody>
+        </table>
+        </div>`
+
+    return `
+    <div class="d-inner">
+        <header class="d-head">
+            <button class="btn btn-ghost" id="detailsBack" type="button">← All groups</button>
+            <div class="d-title">
+                <h2>${esc(name)}</h2>
+                <p class="panel-sub">point allocator on ${POINTS_CONTRACT} ·
+                    budget ${esc(points(a?.budget ?? 0))} ·
+                    allocated ${esc(points(a?.allocated ?? 0))} · per day</p>
+            </div>
+        </header>
+        <p class="panel-note" id="detailsNote" hidden></p>
+        <section class="d-block">
+            <h3>Allocations
+                <span class="d-dim">${rows ? `${rows.length} recipient${
+                    rows.length === 1 ? '' : 's'}` : ''}</span>
+            </h3>
+            ${body}
+        </section>
+    </div>`
+}
+
+async function openAllocator(name) {
+    detailsId = name
+    detailsKind = 'allocator'
+    closePanel()
+    closeTodo()
+    renderDetails()
+    await loadAllocator(name)
+    if (detailsId === name) renderDetails()
 }
 
 // ── Create a proposal ─────────────────────────────────────────────────────
@@ -3107,6 +3339,9 @@ todoEl.addEventListener('click', (e) => {
 // clicking one used to slide a rail in from the edge, so a stray click anywhere
 // on a name or a figure moved the whole page.
 daosEl.addEventListener('click', (e) => {
+    const alloc = e.target.closest('[data-allocdetails]')
+    if (alloc) return openAllocator(alloc.dataset.allocdetails)
+
     const details = e.target.closest('[data-details]')
     if (details) return openDetails(details.dataset.details)
 
@@ -3122,7 +3357,9 @@ async function refreshAll() {
     try {
         stakeConfigs = new Map()
         if (await pickEndpoint()) {
-            await Promise.all([loadDaos(), loadSwapTargets()])
+            allocationsCache = new Map()
+            pointsCache = new Map()
+            await Promise.all([loadDaos(), loadSwapTargets(), loadAllocators()])
             await loadPosition()
         }
     } finally {
@@ -3134,7 +3371,7 @@ $('refreshBtn').addEventListener('click', refreshAll)
 $('refreshVotesBtn').addEventListener('click', refreshGroupVotes)
 $('todoBtn').addEventListener('click', openTodo)
 
-for (const [id, value] of [['tabSyndicates', 'syndicate'], ['tabUnions', 'union']]) {
+for (const [id, value] of [['tabSyndicates', 'syndicate'], ['tabUnions', 'union'], ['tabMsig', 'msig']]) {
     $(id).addEventListener('click', () => {
         group = value
         for (const btn of document.querySelectorAll('.switch-btn')) {
@@ -3162,8 +3399,10 @@ async function boot() {
     // them rather than delaying the page behind a wallet.
     const restoring = restoreSession()
     const targets = loadSwapTargets()
+    const alloc = loadAllocators()
     await loadDaos()
     await targets
+    await alloc
 
     // The councils render as soon as they are read; if a session was restored
     // alongside them, the holdings land in a second pass rather than holding
