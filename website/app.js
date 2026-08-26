@@ -782,6 +782,10 @@ async function loadPosition() {
     }
 
     render()
+
+    // Not awaited: the page is already usable, and the to-do count arrives on
+    // the button a moment later.
+    prefetchTodo()
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -1332,9 +1336,35 @@ function todoChrome() {
     const btn = $('todoBtn')
     const councils = todoDaos()
     btn.hidden = !session || councils.length === 0
-    btn.title = councils.length
-        ? `Open proposals across ${councils.map((d) => d.title).join(', ')}`
-        : ''
+    if (btn.hidden) return
+
+    // The count is what makes this a to-do rather than a link: how many
+    // proposals are still waiting on THIS account's signature. Anything already
+    // approved is no longer outstanding, so it is not counted.
+    const waiting = todoRows().filter(({ p }) => !approvedByMe(p)).length
+
+    // Until every qualifying council's proposals are in, that number would be an
+    // undercount presented as a fact. Showing nothing beats a figure that
+    // quietly grows a second later.
+    const ready = councils.every((d) => proposalsCache.has(d.id))
+
+    btn.innerHTML = ready
+        ? `To do <span class="count${waiting ? ' is-waiting' : ''}">${waiting}</span>`
+        : 'To do'
+    btn.title = ready
+        ? `${waiting} proposal${waiting === 1 ? '' : 's'} still need your approval across ` +
+          `${councils.map((d) => d.title).join(', ')}`
+        : `Reading proposals across ${councils.map((d) => d.title).join(', ')}…`
+}
+
+// Fills the cache the count reads from. Runs in the background once the holdings
+// have landed: the number is worth having up front, but not worth making the
+// page wait for.
+async function prefetchTodo() {
+    const jobs = todoDaos().map(fetchProposals).filter(Boolean)
+    if (jobs.length) await Promise.all(jobs)
+    todoChrome()
+    if (todoOpen) renderTodo()
 }
 
 function refreshVotesChrome() {
