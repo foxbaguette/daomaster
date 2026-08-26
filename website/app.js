@@ -16,7 +16,7 @@
 // The inner action of a multisig proposal is carried as raw `bytes`, so it has
 // to be serialized here. `abi_json_to_bin` used to do this server-side and is
 // now removed or disabled on every node in the list.
-import { ABI, Serializer } from '@wharfkit/antelope'
+import { ABI, Serializer, Transaction } from '@wharfkit/antelope'
 import { SessionKit, Chains } from '@wharfkit/session'
 import WebRenderer from '@wharfkit/web-renderer'
 import { WalletPluginAnchor } from '@wharfkit/wallet-plugin-anchor'
@@ -1682,6 +1682,7 @@ panelInner.addEventListener('click', async (e) => {
 // — which is the whole point of an escape hatch.
 document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
+    if (!createEl.hidden) return closeCreate()
     if (!todoEl.hidden) return closeTodo()
     if (!detailsEl.hidden) return closeDetails()
     if (!panelEl.hidden) return closePanel()
@@ -2251,6 +2252,12 @@ function buildDetails(dao) {
                         ${busy || !runnable.length ? 'disabled' : ''}
                         title="Runs the ones that already have ${need} approvals">
                         Execute ${runnable.length || ''}</button>
+                    ${/* Only with exactly one picked: copying is about a single
+                          proposal, and "copy these four" has no sensible meaning. */
+                      chosen.length === 1 ? `
+                        <button class="act-go is-quiet" id="copyProp" type="button" ${busy ? 'disabled' : ''}
+                            title="Open a new proposal prefilled with this one's actions">
+                            Copy proposal</button>` : ''}
                     <span class="d-dim">${chosen.length} selected${
                         chosen.length ? ` · ${approvable.length} to approve · ${runnable.length} at ${need}+` : ''}</span>
                 </div>` : ''}
@@ -2420,6 +2427,13 @@ detailsEl.addEventListener('click', async (e) => {
             `Vote for ${[...pickedCandidates].join(', ')}`)
     }
 
+    if (e.target.closest('#copyProp')) {
+        const shown = (proposalsCache.get(dao.id) ?? []).filter(propMatches)
+        const one = shown.filter((p) => pickedProposals.has(p.proposal_name))
+        if (one.length !== 1) return
+        return openCreate({ dao, from: one[0] })
+    }
+
     const approve = e.target.closest('#approveProps')
     const exec = e.target.closest('#execProps')
     if (!approve && !exec) return
@@ -2477,6 +2491,340 @@ async function refreshProposals(dao) {
     pickedProposals = new Set()
     await loadDetails(dao)
 }
+
+// ── Create a proposal ─────────────────────────────────────────────────────
+//
+// The general form of what the setperiodlen button does for one fixed action:
+// name a council, describe the thing, list the actions, and raise it for the
+// council to approve.
+//
+// Copying an existing proposal is the same form, prefilled. That means going the
+// other way through the serializer — a proposal on chain is a packed transaction
+// whose actions carry their arguments as opaque bytes, so each one has to be
+// decoded against its own contract's ABI before it can be shown, let alone
+// edited.
+
+const createEl = $('create')
+let createOpen = false
+let createForm = null   // { daoId, title, description, days, actions: [{account, name, data}] }
+
+const blankAction = () => ({ account: '', name: '', data: '{}' })
+
+// A proposal's packed transaction, turned back into something a person can read
+// and edit. Each action's arguments need that action's own contract ABI, so this
+// is several network reads — but only on the copy path, and only once.
+async function decodeProposal(p) {
+    const trx = Serializer.decode({ type: Transaction, data: p.packed_transaction })
+    const out = []
+    for (const a of trx.actions ?? []) {
+        const account = String(a.account)
+        const name = String(a.name)
+        let data = '{}'
+        try {
+            const abi = await getAbi(account)
+            data = JSON.stringify(Serializer.objectify(
+                Serializer.decode({ abi, type: name, data: a.data })), null, 2)
+        } catch (err) {
+            // Better to hand over the raw bytes than to silently drop an action:
+            // the reader can still see what was there and decide.
+            console.error(`Could not decode ${account}::${name}:`, err)
+            data = `/* could not decode — raw bytes: ${String(a.data)} */`
+        }
+        out.push({ account, name, data })
+    }
+    return out
+}
+
+async function openCreate({ dao, from } = {}) {
+    createOpen = true
+    closePanel()
+    closeDetails()
+    closeTodo()
+
+    createForm = {
+        daoId: dao?.id ?? daos[0]?.id ?? '',
+        title: from ? `Copy of ${msigTitle(from)}` : '',
+        description: from
+            ? (from.metadata ?? []).find((m) => m.key === 'description')?.value ?? ''
+            : '',
+        days: 7,
+        actions: [blankAction()],
+        decoding: !!from,
+    }
+    renderCreate()
+
+    if (from) {
+        try {
+            const actions = await decodeProposal(from)
+            if (createOpen && createForm) {
+                createForm.actions = actions.length ? actions : [blankAction()]
+                createForm.decoding = false
+                renderCreate()
+            }
+        } catch (err) {
+            console.error('Could not read the source proposal:', err)
+            if (createForm) createForm.decoding = false
+            renderCreate()
+            createNote(`Could not decode that proposal: ${readableError(err)}`, 'error')
+        }
+    }
+}
+
+function closeCreate() {
+    createOpen = false
+    createForm = null
+    createEl.hidden = true
+    document.body.classList.remove('is-details')
+}
+
+// Reads the form back out of the DOM. The fields are uncontrolled — typing into
+// a textarea must not trigger a re-render that throws away the caret — so this
+// is the one place the current values are gathered.
+function readCreateForm() {
+    if (!createForm) return null
+    const q = (sel) => createEl.querySelector(sel)
+    createForm.daoId = q('#cpDao')?.value ?? createForm.daoId
+    createForm.title = q('#cpTitle')?.value ?? ''
+    createForm.description = q('#cpDesc')?.value ?? ''
+    createForm.days = Number(q('#cpDays')?.value) || 7
+    createForm.actions = [...createEl.querySelectorAll('.cp-action')].map((row) => ({
+        account: row.querySelector('[data-f="account"]')?.value.trim() ?? '',
+        name: row.querySelector('[data-f="name"]')?.value.trim() ?? '',
+        data: row.querySelector('[data-f="data"]')?.value ?? '{}',
+    }))
+    return createForm
+}
+
+function renderCreate() {
+    if (!createOpen) return
+    let html
+    try {
+        html = buildCreate()
+    } catch (err) {
+        console.error('Could not render the create form:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="cpBack" type="button">← All DAOs</button>
+                <div class="d-title"><h2>New proposal</h2></div>
+            </header>
+            <p class="panel-note is-error">${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+    createEl.innerHTML = html
+    createEl.hidden = false
+    document.body.classList.add('is-details')
+    paintCreateNote()
+}
+
+function buildCreate() {
+    const f = createForm
+    const dao = daoById(f.daoId)
+
+    return `
+    <div class="d-inner">
+        <header class="d-head">
+            <button class="btn btn-ghost" id="cpBack" type="button">← All DAOs</button>
+            <div class="d-title">
+                <h2>New proposal</h2>
+                <p class="panel-sub">Raised for a council to approve. Nothing happens on chain
+                    until enough custodians sign it and someone executes it.</p>
+            </div>
+        </header>
+
+        <p class="panel-note" id="cpNote" hidden></p>
+
+        <section class="d-block">
+            <h3>Where</h3>
+            <div class="cp-grid">
+                <label class="cp-field">
+                    <span>Council</span>
+                    <select id="cpDao">
+                        ${daos.map((d) => `<option value="${esc(d.id)}"${
+                            d.id === f.daoId ? ' selected' : ''}>${esc(d.title)}</option>`).join('')}
+                    </select>
+                </label>
+                <label class="cp-field">
+                    <span>Approvals expire after</span>
+                    <input id="cpDays" type="number" min="1" max="90" value="${f.days}">
+                </label>
+            </div>
+            <p class="act-blurb">Approval will be requested from
+                <code>${esc(dao?.owner ?? '—')}@active</code>, and
+                ${dao ? `<b>${dao.approvalThreshold ?? 3}</b> custodian signatures` : 'the council'}
+                are needed before it can run.</p>
+        </section>
+
+        <section class="d-block">
+            <h3>What it says</h3>
+            <label class="cp-field">
+                <span>Title</span>
+                <input id="cpTitle" type="text" maxlength="120" value="${esc(f.title)}"
+                       placeholder="Shown in the proposals list">
+            </label>
+            <label class="cp-field">
+                <span>Description</span>
+                <textarea id="cpDesc" rows="4"
+                          placeholder="What this does and why">${esc(f.description)}</textarea>
+            </label>
+        </section>
+
+        <section class="d-block">
+            <h3>What it does
+                <span class="d-dim">${f.decoding ? 'decoding the original…' : `${f.actions.length} action${
+                    f.actions.length === 1 ? '' : 's'}`}</span>
+            </h3>
+            ${f.actions.map((a, i) => `
+                <div class="cp-action">
+                    <div class="cp-grid">
+                        <label class="cp-field">
+                            <span>Contract</span>
+                            <input data-f="account" type="text" value="${esc(a.account)}"
+                                   placeholder="dao.worlds" spellcheck="false">
+                        </label>
+                        <label class="cp-field">
+                            <span>Action</span>
+                            <input data-f="name" type="text" value="${esc(a.name)}"
+                                   placeholder="setperiodlen" spellcheck="false">
+                        </label>
+                        <button class="act-mini cp-drop" data-drop="${i}" type="button"
+                                ${f.actions.length === 1 ? 'disabled' : ''}>remove</button>
+                    </div>
+                    <label class="cp-field">
+                        <span>Arguments</span>
+                        <textarea data-f="data" rows="${Math.min(14, (a.data.match(/\n/g)?.length ?? 0) + 3)}"
+                                  spellcheck="false">${esc(a.data)}</textarea>
+                    </label>
+                </div>`).join('')}
+            <button class="act-mini" id="cpAdd" type="button">add another action</button>
+        </section>
+
+        <div class="d-actions">
+            <button class="act-go" id="cpSubmit" type="button" ${busy || f.decoding ? 'disabled' : ''}>
+                Create proposal</button>
+            <span class="d-dim">Arguments are JSON, serialized against each contract's own ABI.</span>
+        </div>
+    </div>`
+}
+
+let createMessage = null
+function createNote(text, kind = '') {
+    createMessage = text ? { text, kind } : null
+    paintCreateNote()
+}
+function paintCreateNote() {
+    const el = $('cpNote')
+    if (!el) return
+    el.textContent = createMessage?.text ?? ''
+    el.className = `panel-note${createMessage?.kind ? ` is-${createMessage.kind}` : ''}`
+    el.hidden = !createMessage
+}
+
+async function submitCreate() {
+    const f = readCreateForm()
+    if (!session || busy || !f) return
+
+    const dao = daoById(f.daoId)
+    if (!dao?.owner) return createNote('Pick a council with a registered owner account.', 'error')
+    if (!f.title.trim()) return createNote('Give it a title — it is what the council will see.', 'error')
+
+    const rows = f.actions.filter((a) => a.account && a.name)
+    if (!rows.length) return createNote('A proposal needs at least one action.', 'error')
+
+    // Serialize every action before sending any of it: a proposal that is half
+    // built is not worth putting in front of a wallet.
+    const inner = []
+    for (const a of rows) {
+        let args
+        try {
+            args = JSON.parse(a.data)
+        } catch (err) {
+            return createNote(`${a.account}::${a.name} — arguments are not valid JSON: ${err.message}`, 'error')
+        }
+        try {
+            const abi = await getAbi(a.account)
+            inner.push({
+                account: a.account,
+                name: a.name,
+                authorization: [{ actor: dao.owner, permission: 'active' }],
+                data: String(Serializer.encode({ abi, type: a.name, object: args })),
+            })
+        } catch (err) {
+            return createNote(`${a.account}::${a.name} — ${readableError(err)}`, 'error')
+        }
+    }
+
+    const days = Math.min(90, Math.max(1, Math.round(f.days)))
+    const expiry = new Date(Date.now() + days * 86400000).toISOString().slice(0, 19)
+    const actor = String(session.actor)
+
+    busy = true
+    renderCreate()
+    createNote('Creating the proposal — check your wallet…', 'work')
+
+    try {
+        await session.transact({
+            actions: [{
+                account: MSIG_CONTRACT, name: 'propose', authorization: auth(),
+                data: {
+                    proposer: actor,
+                    proposal_name: proposalName(),
+                    requested: [{ actor: dao.owner, permission: 'active' }],
+                    dac_id: dao.id,
+                    metadata: [
+                        { key: 'title', value: f.title.trim() },
+                        { key: 'description', value: f.description.trim() || '- No description -' },
+                    ],
+                    trx: {
+                        expiration: expiry,
+                        ref_block_num: 0,
+                        ref_block_prefix: 0,
+                        max_net_usage_words: 0,
+                        max_cpu_usage_ms: 0,
+                        delay_sec: 0,
+                        context_free_actions: [],
+                        actions: inner,
+                        transaction_extensions: [],
+                    },
+                },
+            }],
+        }, { broadcast: true })
+
+        createNote('Proposal created. Re-reading…', 'ok')
+        await sleep(2500)
+        proposalsCache.delete(dao.id)
+        await fetchProposals(dao)
+        createNote(`Proposal created in ${dao.title}.`, 'ok')
+    } catch (err) {
+        if (isUserCancel(err)) createNote('Cancelled.')
+        else {
+            console.error('Create failed:', err)
+            createNote(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        renderCreate()
+    }
+}
+
+createEl.addEventListener('click', (e) => {
+    if (e.target.closest('#cpBack')) return closeCreate()
+
+    if (e.target.closest('#cpAdd')) {
+        readCreateForm()
+        createForm.actions.push(blankAction())
+        return renderCreate()
+    }
+
+    const drop = e.target.closest('[data-drop]')
+    if (drop) {
+        readCreateForm()
+        createForm.actions.splice(Number(drop.dataset.drop), 1)
+        if (!createForm.actions.length) createForm.actions = [blankAction()]
+        return renderCreate()
+    }
+
+    if (e.target.closest('#cpSubmit')) return submitCreate()
+})
 
 // ── To do ─────────────────────────────────────────────────────────────────
 //
@@ -2586,6 +2934,10 @@ function buildTodo() {
                 ${busy || !runnable.length ? 'disabled' : ''}
                 title="Runs the ones that already have enough approvals">
                 Execute ${runnable.length || ''}</button>
+            ${chosen.length === 1 ? `
+                <button class="act-go is-quiet" id="todoCopy" type="button" ${busy ? 'disabled' : ''}
+                    title="Open a new proposal prefilled with this one's actions">
+                    Copy proposal</button>` : ''}
             <span class="d-dim">${chosen.length} selected of ${rows.length}</span>
         </div>
 
@@ -2706,6 +3058,12 @@ todoEl.addEventListener('click', (e) => {
         const all = rows.length > 0 && rows.every(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
         todoPicked = all ? new Set() : new Set(rows.map(({ dao, p }) => todoKey(dao, p)))
         return renderTodo()
+    }
+
+    if (e.target.closest('#todoCopy')) {
+        const one = rows.filter(({ dao, p }) => todoPicked.has(todoKey(dao, p)))
+        if (one.length !== 1) return
+        return openCreate({ dao: one[0].dao, from: one[0].p })
     }
 
     const approve = e.target.closest('#todoApprove')

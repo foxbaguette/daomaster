@@ -817,10 +817,21 @@ body.is-details, body.is-modal { overflow: hidden; }
 }
 .row-meta .row-id { margin-top: 0; }
 
+/* Big enough to hit without aiming. These sit in rows ~100px tall next to a
+   32px badge; a 14px box was the smallest thing on screen and the one you had
+   to click most. */
 .d-table input[type="checkbox"] {
     accent-color: var(--gold);
-    width: 14px; height: 14px;
+    width: 22px; height: 22px;
     cursor: pointer;
+    margin: 0 2px;
+}
+
+/* The whole cell is the target, not just the box inside it. */
+.d-table td:has(> input[type="checkbox"]) {
+    cursor: pointer;
+    padding-left: 14px;
+    padding-right: 6px;
 }
 
 .pill {
@@ -1169,6 +1180,67 @@ body.is-details, body.is-modal { overflow: hidden; }
     font-family: var(--mono);
     color: var(--text-muted);
 }
+
+/* ── Create a proposal ───────────────────────────────────────────────────── */
+
+/* A secondary action beside the two that sign things. Same shape, no gold — it
+   opens a form, it does not commit anything. */
+.act-go.is-quiet {
+    color: var(--text-muted);
+    background: transparent;
+    border-color: var(--line);
+}
+.act-go.is-quiet:hover:not(:disabled) {
+    color: var(--text);
+    background: rgba(150, 160, 210, .10);
+}
+
+.cp-grid {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.cp-field { display: block; flex: 1 1 220px; margin-bottom: 12px; }
+
+.cp-field > span {
+    display: block;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 5px;
+}
+
+.cp-field input,
+.cp-field select,
+.cp-field textarea {
+    width: 100%;
+    background: var(--panel-in);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 9px 11px;
+}
+.cp-field textarea { resize: vertical; line-height: 1.5; }
+.cp-field input:focus,
+.cp-field select:focus,
+.cp-field textarea:focus { outline: none; border-color: rgba(242, 183, 60, .40); }
+.cp-field select option { background: var(--panel-solid); }
+
+/* One action of the proposed transaction. Boxed, because a proposal with three
+   of these needs the boundaries to be obvious. */
+.cp-action {
+    padding: 14px 14px 2px;
+    margin-bottom: 12px;
+    background: rgba(150, 160, 210, .03);
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--line);
+}
+
+.cp-drop { flex: none; margin-bottom: 12px; }
 
 /* ── To do ───────────────────────────────────────────────────────────────── */
 
