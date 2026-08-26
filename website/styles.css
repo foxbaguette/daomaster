@@ -1243,6 +1243,29 @@ body.is-details, body.is-modal { overflow: hidden; }
 .d-table td.is-lapsed { color: var(--text-faint); }
 .d-table td.is-lapsed .row-id { color: var(--danger); }
 
+/* Five columns of plain figures, so there is room to make them legible. The
+   dense table exists because proposal rows carry a title, a proposer and a
+   badge; this one carries none of that. */
+.d-table.is-roomy th {
+    font-size: 11px;
+    padding: 10px 14px;
+}
+
+.d-table.is-roomy td {
+    padding: 14px;
+    font-size: 16px;
+    vertical-align: middle;
+}
+
+.d-table.is-roomy td.num {
+    font-size: 19px;
+    color: var(--text);
+}
+
+.d-table.is-roomy .row-dao { font-size: 18px; }
+.d-table.is-roomy .pill { font-size: 13px; padding: 4px 11px; }
+.d-table.is-roomy .act-mini { font-size: 12px; padding: 5px 10px; }
+
 .alloc-form { margin-bottom: 16px; }
 .alloc-form .cp-field { max-width: 340px; }
 .alloc-form code { font-family: var(--mono); color: var(--text-muted); }

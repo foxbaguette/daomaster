@@ -2755,15 +2755,14 @@ function buildAllocatorDetails(name) {
             ? '<p class="panel-empty">Reading…</p>'
             : `
         <div class="d-scroll is-tall">
-        <table class="d-table">
+        <table class="d-table is-roomy">
             <thead><tr>
                 <th>Recipient</th>
-                <th class="num">Allocated</th>
                 <th>Mode</th>
-                <th class="num">Running total</th>
                 <th class="num">Period spent</th>
                 <th class="num">Period budget</th>
                 <th class="num">Period ends</th>
+                ${canAllocate ? '<th></th>' : ''}
             </tr></thead>
             <tbody>
             ${rows.map((r) => {
@@ -2771,51 +2770,46 @@ function buildAllocatorDetails(name) {
                 if (!c) {
                     return `<tr>
                         <td><b class="row-dao">${esc(r.account)}</b></td>
-                        <td class="num">${esc(points(r.allocated))}</td>
-                        <td colspan="5" class="d-dim">${
+                        <td colspan="${canAllocate ? 5 : 4}" class="d-dim">${
                             c === null ? 'no pointsconfig for this account' : 'reading…'}</td>
                     </tr>`
                 }
                 const ends = Date.parse(`${c.period_end}Z`)
                 const lapsed = Number.isFinite(ends) && ends < Date.now()
                 const days = durationDays(c.period_duration) ?? 30
-                const { share, total } = fundingShare(r.account, name)
+                const { share } = fundingShare(r.account, name)
 
                 // What THIS allocator puts in over a period: its per-day
-                // allocation across the period's days. That is exact — it is
-                // this allocator's own number, not a slice of someone else's.
+                // allocation across the period's days. Exact — its own number,
+                // not a slice of someone else's.
                 const myBudget = Number(r.allocated) * days
 
                 // Spend has no per-funder record, so it is apportioned by share
-                // of funding. Marked as a share, with the recipient's own total
-                // on hover, because it is derived rather than read.
-                const myRunning = Number(c.running_total) * share
+                // of funding. The workings moved into the tooltips when the
+                // table was cleaned up; the figures carry the row now.
                 const mySpent = Number(c.period_total) * share
                 const pct = myBudget > 0 ? Math.min(100, (mySpent / myBudget) * 100) : 0
                 const sharePct = (share * 100).toFixed(share >= 0.1 ? 0 : 1)
 
+                // Built here rather than inline: the workings are long, and a
+                // template literal broken across lines to fit them was what
+                // produced a malformed one last time.
+                const spentTitle = `${sharePct}% of ${r.account}'s funding comes from ${name}, `
+                    + `so that share of its ${points(c.period_total)} spend this period is attributed `
+                    + `here — ${pct.toFixed(0)}% of what you put in.`
+
                 return `<tr>
-                    <td>
-                        <b class="row-dao">${esc(r.account)}</b>
-                        <span class="row-id">${c.active ? 'active' : 'inactive'} · ${
-                            esc(sharePct)}% of its funding</span>
-                    </td>
-                    <td class="num">${esc(points(r.allocated))}</td>
+                    <td><b class="row-dao">${esc(r.account)}</b></td>
                     <td><span class="pill ${c.debug_mode ? 'is-debug' : 'is-live'}"
                         title="debug_mode = ${c.debug_mode ? 1 : 0}">${
                         c.debug_mode ? 'debug' : 'live'}</span></td>
-                    <td class="num" title="Apportioned by this allocator's ${esc(sharePct)}% share. ${
-                        esc(r.account)} has spent ${esc(points(c.running_total))} in total.">
-                        ${esc(points(myRunning))}<span class="row-id">share</span></td>
-                    <td class="num" title="Apportioned by share. ${esc(r.account)} has spent ${
-                        esc(points(c.period_total))} this period.">
-                        ${esc(points(mySpent))}<span class="row-id">${pct.toFixed(0)}% of yours</span></td>
+                    <td class="num" title="${esc(spentTitle)}">${esc(points(mySpent))}</td>
                     <td class="num" title="${esc(points(r.allocated))} per day over ${days} days. ${
-                        esc(r.account)} has ${esc(points(c.period_budget))} from all funders.">
-                        ${esc(points(myBudget))}<span class="row-id">yours</span></td>
-                    <td class="num ${lapsed ? 'is-lapsed' : ''}">
-                        ${esc(isoDay(ends))}
-                        <span class="row-id">${lapsed ? 'lapsed' : 'open'} · ${days}d period</span></td>
+                        esc(r.account)} has ${esc(points(c.period_budget))} from all its funders.">
+                        ${esc(points(myBudget))}</td>
+                    <td class="num ${lapsed ? 'is-lapsed' : ''}"
+                        title="${days} day period, ${lapsed ? 'already lapsed' : 'still open'}">
+                        ${esc(isoDay(ends))}</td>
                     ${canAllocate ? `<td class="num alloc-actions">
                         <button class="act-mini" data-alloc-op="add" data-to="${esc(r.account)}"
                                 type="button">increase</button>
@@ -2823,7 +2817,7 @@ function buildAllocatorDetails(name) {
                                 type="button">decrease</button>
                     </td>` : ''}
                 </tr>`
-            }).join('') || `<tr><td colspan="${canAllocate ? 8 : 7}" class="d-dim">This allocator has no allocations.</td></tr>`}
+            }).join('') || `<tr><td colspan="${canAllocate ? 6 : 5}" class="d-dim">This allocator has no allocations.</td></tr>`}
             </tbody>
         </table>
         </div>`
