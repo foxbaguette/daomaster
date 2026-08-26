@@ -2640,12 +2640,22 @@ async function allocatorAuth(name) {
 // DAO if it owns one. Today that is synthar alone, whose six signers are the
 // planet DACs; trilara, megalos and khaurex are signed by ordinary accounts and
 // match nothing here. The rule follows the chain rather than a list of names.
+// Split by whether this account can actually raise the council proposal.
+// msig.worlds only takes one from a seated custodian of that DAC. The contract
+// is not open source, but every proposer on chain holds a seat on the council
+// they proposed to — bar one who has since lost theirs in an election.
+//
+// The councils you do not sit on are not yours to raise. They are still needed;
+// someone on each of them has to do it.
 function councilSigners(signers) {
-    if (!signers) return []
+    if (!signers) return { mine: [], others: [] }
     const byOwner = new Map(daos.map((d) => [d.owner, d]))
-    return signers.members
-        .map((m) => byOwner.get(m.actor))
-        .filter(Boolean)
+    const me = session ? String(session.actor) : null
+    const all = signers.members.map((m) => byOwner.get(m.actor)).filter(Boolean)
+    return {
+        mine: all.filter((d) => me && d.custodians.includes(me)),
+        others: all.filter((d) => !me || !d.custodians.includes(me)),
+    }
 }
 
 // A reference to a recent irreversible block. eosio.msig proposals carry real
@@ -2895,7 +2905,7 @@ function allocFormHtml(name) {
     if (!allocForm) return ''
     const op = ALLOC_OPS[allocForm.op]
     const signers = authCache.get(name)
-    const councils = councilSigners(signers)
+    const { mine: councils, others: notMine } = councilSigners(signers)
     const rows = allocationsCache.get(name) ?? []
     const current = rows.find((r) => r.account === allocForm.to)
     const cfg = current ? pointsCache.get(current.account) : null
@@ -2944,11 +2954,15 @@ function allocFormHtml(name) {
         ${signers ? `<p class="act-blurb">Approval will be asked of
             ${signers.members.map((m) => `<code>${esc(m.actor)}</code>`).join(', ')} —
             <b>${signers.threshold}</b> of them must sign before it can run.</p>` : ''}
-        ${councils.length ? `<p class="act-blurb is-note">
-            ${councils.length} of those signers are DAOs and cannot approve directly, so this will
-            also raise a proposal on
-            ${councils.map((d) => `<code>${esc(d.title)}</code>`).join(', ')}
-            for their councils to pass. ${councils.length + 1} proposals in one transaction.</p>` : ''}
+        ${councils.length || notMine.length ? `<p class="act-blurb is-note">
+            ${councils.length + notMine.length} of those signers are DAOs and cannot approve directly —
+            each needs a proposal on its own council, and msig.worlds only accepts one from a
+            seated custodian.
+            ${councils.length ? `This raises ${councils.length} of them, on
+                ${councils.map((d) => `<code>${esc(d.title)}</code>`).join(', ')} —
+                ${councils.length + 1} proposals in one transaction.` : 'You sit on none of them.'}
+            ${notMine.length ? `<b>${notMine.map((d) => esc(d.title)).join(', ')}</b> you do not sit on,
+                so a custodian there has to raise that one.` : ''}</p>` : ''}
 
         <div class="d-actions">
             <button class="act-go" id="alSubmit" type="button" ${busy || !signers ? 'disabled' : ''}>
@@ -3035,7 +3049,7 @@ async function submitAlloc(name) {
         // Worked out from the directory rather than by naming synthar: a signer
         // is a DAO if it owns one. The other three allocators have none, so they
         // produce no extra proposals.
-        const councils = councilSigners(signers)
+        const { mine: councils, others: notMine } = councilSigners(signers)
         if (councils.length) {
             const msigAbi = await getAbi('eosio.msig')
             const title = `${op.verb}: ${to} — ${shown.toLocaleString('en-US')}`
@@ -3093,9 +3107,13 @@ async function submitAlloc(name) {
         await session.transact({ actions }, { broadcast: true })
 
         detailsNote(councils.length
-            ? `Proposal created, plus one on each of ${councils.map((d) => d.title).join(', ')} `
-              + `for their councils to approve it. ${signers.threshold} of `
-              + `${signers.members.length} must sign.`
+            ? `Proposal created, plus one on ${councils.map((d) => d.title).join(', ')} `
+              + `for those councils to approve it. ${signers.threshold} of `
+              + `${signers.members.length} signatures are needed`
+              + (notMine.length
+                  ? `, and ${notMine.map((d) => d.title).join(', ')} still needs a custodian of its own `
+                    + 'to raise the same proposal there.'
+                  : '.')
             : `Proposal created — ${signers.threshold} of ${signers.members.length} must now sign it.`,
             'ok')
         allocForm = null
