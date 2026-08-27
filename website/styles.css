@@ -1679,5 +1679,24 @@ body.is-details, body.is-modal { overflow: hidden; }
 }
 .wp-do.is-live:hover { color: var(--gold-hot); background: rgba(242, 183, 60, .19); }
 
+/* The field and its upload button share a line: the button fills the field,
+   so putting it anywhere else would hide that relationship. */
+.wp-doc { display: flex; gap: 8px; align-items: stretch; }
+.wp-doc input { flex: 1 1 auto; min-width: 0; }
+
+/* Sized to the input beside it rather than to the other act-minis, and it takes
+   the file name once the upload lands - so it has to be able to hold one. */
+.wp-upload {
+    flex: none;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--gold);
+    border-color: rgba(242, 183, 60, .38);
+    background: var(--gold-soft);
+}
+.wp-upload:hover:not(:disabled) { color: var(--gold-hot); background: rgba(242, 183, 60, .19); }
+
 .wp-form .cp-field { margin-top: 12px; }
 .wp-form .cp-grid { align-items: end; }

@@ -527,6 +527,44 @@ nothing for the arbiter can never start.
 The pay token is taken from the config's own `proposal_fee` rather than assumed
 to be TLM.
 
+### The document, and uploading one
+
+`content_hash` is a free string. Both an IPFS CID and a plain URL appear on chain
+today, so the list makes either clickable — a CID through Alien Worlds' own
+gateway, which is where [wps.alienops.io](https://wps.alienops.io) links every
+document:
+
+```
+https://ipfs.alienworlds.io/ipfs/<cid>
+```
+
+The **Upload** button beside the field pins a file and fills the field with its
+CID, against the same endpoint the WPS client uses:
+
+```
+POST https://api.alienworlds.io/workerproposal/upload
+multipart/form-data, one part named "file"
+→ { "result": { "name", "cid", "size", "allocations": [...] } }
+```
+
+It answers `Access-Control-Allow-Origin: *`, so it can be called straight from
+the page. Two details worth keeping:
+
+- **Do not set `Content-Type`.** The browser has to write it itself so it can
+  attach the multipart boundary; naming it by hand produces a header with no
+  boundary and the server cannot parse the body. (The WPS client passes
+  `multipart/form-data` to axios, which discards it for exactly this reason.)
+- **409 means already pinned**, and the CID is inside the message text — between
+  `Qm` and ` is`. That is a success wearing an error's clothes, so it fills the
+  field like any other. Re-uploading an identical file actually answers **200
+  with the same CID** today, so this branch is unexercised; it is kept for parity
+  with the WPS client, which handles it.
+
+Nothing in the upload path re-renders. The form's fields are uncontrolled, and
+rebuilding the section mid-upload would throw away whatever had been typed into
+the other six — so the button's label and the CID are written straight into the
+DOM.
+
 ## The watchlist
 
 `WATCHED` in `app.js` is a hand-supplied set of accounts. Any custodian in it is

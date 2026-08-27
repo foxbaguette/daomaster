@@ -2490,6 +2490,14 @@ detailsEl.addEventListener('change', (e) => {
         return
     }
 
+    if (e.target.id === 'wpFile') {
+        const file = e.target.files?.[0]
+        // Cleared so choosing the same file twice fires change again — after a
+        // failed upload, re-picking the same file is the obvious retry.
+        e.target.value = ''
+        return wpUpload(file)
+    }
+
     const prop = e.target.closest('[data-prop]')
     if (prop) {
         if (prop.checked) pickedProposals.add(prop.dataset.prop)
@@ -2557,6 +2565,7 @@ detailsEl.addEventListener('click', async (e) => {
         detailsNote(null)
         return renderDetails()
     }
+    if (e.target.closest('#wpUploadBtn')) return detailsEl.querySelector('#wpFile')?.click()
     if (e.target.closest('#wpCancel')) { wpForm = null; return renderDetails() }
     if (e.target.closest('#wpSubmit')) return submitWorkerCreate(dao)
 
@@ -2836,13 +2845,76 @@ function wpMyVote(p, wp) {
 // paid, and it runs from CREATION, not from completework.
 const wpPayableAt = (p, wp) => wpTime(p.created_at) + (wp.config.min_proposal_duration * 1000)
 
+// Where the proposal documents live. Uploads go through Alien Worlds' own pinning
+// endpoint and the WPS site links every CID at this gateway, so a document raised
+// from either site resolves from the same place.
+const IPFS_UPLOAD  = 'https://api.alienworlds.io/workerproposal/upload'
+const IPFS_GATEWAY = 'https://ipfs.alienworlds.io/ipfs/'
+
 // The proposal document. Workers put either an IPFS CID or a plain URL in
 // `content_hash` and both appear on chain today, so both are made clickable.
 function wpDocUrl(hash) {
     const s = String(hash ?? '').trim()
     if (/^https?:\/\//i.test(s)) return s
-    if (/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/.test(s)) return `https://ipfs.io/ipfs/${s}`
+    if (/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/.test(s)) return `${IPFS_GATEWAY}${s}`
     return null
+}
+
+// Pins a file and puts its CID in the Document field. Same endpoint, same field
+// name and same response shape the WPS site uses, so a document uploaded here is
+// pinned exactly where one uploaded there would be.
+//
+// Content-Type is deliberately NOT set: the browser has to write it itself so it
+// can attach the multipart boundary, and naming it by hand produces a header with
+// no boundary that the server cannot parse.
+//
+// Nothing here re-renders. The form's fields are uncontrolled, and rebuilding the
+// section mid-upload would throw away whatever has been typed into the other six.
+async function wpUpload(file) {
+    const btn = detailsEl.querySelector('#wpUploadBtn')
+    const field = detailsEl.querySelector('#wpUrl')
+    if (!file || !btn || !field) return
+
+    const label = btn.textContent
+    btn.disabled = true
+    btn.textContent = 'Uploading…'
+    detailsNote(`Pinning ${file.name}…`, 'work')
+
+    const body = new FormData()
+    body.append('file', file)
+
+    try {
+        const res = await fetch(IPFS_UPLOAD, { method: 'POST', body })
+        const text = await res.text()
+
+        if (!res.ok) {
+            // 409 means the file is already pinned, which is a success wearing an
+            // error's clothes — the CID is in the message. Uploading the same
+            // file twice answers 200 with the same CID today, so this path is
+            // untested against the live service and is here for parity with the
+            // WPS client, which handles it.
+            const cid = res.status === 409 ? text.slice(text.indexOf('Qm'), text.indexOf(' is')) : ''
+            if (!cid) throw new Error(text.slice(0, 200) || `upload failed (${res.status})`)
+            field.value = cid
+            if (wpForm) wpForm.url = cid
+            btn.textContent = file.name
+            return detailsNote(`${file.name} was already pinned — using its CID.`, 'ok')
+        }
+
+        const cid = JSON.parse(text)?.result?.cid
+        if (!cid) throw new Error('the upload service returned no CID')
+
+        field.value = cid
+        if (wpForm) wpForm.url = cid
+        btn.textContent = file.name
+        detailsNote(`${file.name} pinned as ${cid}.`, 'ok')
+    } catch (err) {
+        console.error('IPFS upload failed:', err)
+        btn.textContent = label
+        detailsNote(`Could not upload ${file.name}: ${readableError(err)}`, 'error')
+    } finally {
+        btn.disabled = false
+    }
 }
 
 // ── Reading ───────────────────────────────────────────────────────────────
@@ -3193,11 +3265,19 @@ function wpFormHtml(dao, wp) {
                       placeholder="A few lines the council will read in the list">${esc(f.summary)}</textarea>
         </label>
 
-        <label class="cp-field">
+        <!-- A div rather than a label: two controls under one label makes a
+             click on the button activate the label and jump focus to the text
+             field instead. -->
+        <div class="cp-field">
             <span>Document</span>
-            <input id="wpUrl" type="text" value="${esc(f.url)}" spellcheck="false"
-                   placeholder="An IPFS CID or a link to the full proposal">
-        </label>
+            <div class="wp-doc">
+                <input id="wpUrl" type="text" value="${esc(f.url)}" spellcheck="false"
+                       placeholder="An IPFS CID, or a link to the full proposal">
+                <button class="act-mini wp-upload" id="wpUploadBtn" type="button"
+                        title="Pin a file to IPFS and fill the field with its CID">Upload</button>
+            </div>
+            <input id="wpFile" type="file" hidden>
+        </div>
 
         <div class="cp-grid">
             <label class="cp-field">
