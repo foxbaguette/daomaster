@@ -221,6 +221,25 @@ html, body {
 
 /* ── Switch ──────────────────────────────────────────────────────────────── */
 
+/* One line, two unrelated things. The tabs choose what you are looking at; the
+   buttons at the far end are errands for the connected account and belong to no
+   tab. Adjacent, they read as two more tabs — the gap between them is what says
+   otherwise. */
+.tabrow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 26px;
+}
+
+.tabrow-acts {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
 .switch {
     display: inline-flex;
     border: 1px solid var(--line);
@@ -228,6 +247,9 @@ html, body {
     clip-path: var(--cut-sm);
     margin-bottom: 26px;
 }
+
+/* The row owns the spacing now. */
+.tabrow .switch { margin-bottom: 0; }
 
 .switch-btn {
     font-family: var(--font);
@@ -1414,7 +1436,7 @@ body.is-details, body.is-modal { overflow: hidden; }
 /* Neutral, not gold. Gold on this page means authority — a seat, a threshold,
    an election — and a way into a list is none of those. The count carries the
    emphasis instead, and only when there is something to carry. */
-.todo-btn { margin: 0 0 26px 10px; vertical-align: top; }
+.todo-btn { margin: 0; }
 
 .todo-btn .count { color: var(--text-faint); }
 .todo-btn .count.is-waiting {
@@ -1505,7 +1527,7 @@ body.is-details, body.is-modal { overflow: hidden; }
     cursor: help;
 }
 
-.refresh-votes { margin: 0 0 26px 10px; vertical-align: top; }
+.refresh-votes { margin: 0; }
 
 /* ── Status / foot ───────────────────────────────────────────────────────── */
 
@@ -1546,3 +1568,116 @@ body.is-details, body.is-modal { overflow: hidden; }
 }
 .foot a { color: var(--text-muted); text-decoration: none; border-bottom: 1px dotted var(--line); }
 .foot a:hover { color: var(--gold); }
+
+/* ── Worker proposals ────────────────────────────────────────────────────── */
+
+.wp-table td { vertical-align: top; }
+.wp-state { width: 1%; padding: 10px; }
+
+/* The state is the whole question on one of these rows - a job waiting on votes
+   and a job waiting to be paid ask completely different things of whoever is
+   reading - so it is drawn at the size of the approvals badge beside it rather
+   than as another pill in a line of pills. */
+.wp-badge {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 116px;
+    padding: 10px 12px;
+    background: var(--panel-in);
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+}
+
+.wp-badge b {
+    font-family: var(--font);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    line-height: 1.05;
+    color: var(--text);
+}
+
+.wp-badge i {
+    font-style: normal;
+    font-size: 9.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+
+/* Waiting on somebody else's votes: nothing to do, so it stays quiet. */
+.wp-badge.is-wait { border-left-color: var(--text-faint); }
+.wp-badge.is-wait b { color: var(--text-muted); }
+
+/* Cleared its threshold - someone can act on this now. */
+.wp-badge.is-go {
+    border-color: rgba(242, 183, 60, .40);
+    border-left-color: var(--gold);
+    background: var(--gold-soft);
+}
+.wp-badge.is-go b { color: var(--gold); }
+.wp-badge.is-go i { color: rgba(242, 183, 60, .65); }
+
+/* Work is happening. Live, but not asking anything of the reader. */
+.wp-badge.is-work {
+    border-left-color: var(--blue);
+    background: var(--blue-soft);
+}
+.wp-badge.is-work b { color: var(--blue); }
+
+/* Paid and finished. */
+.wp-badge.is-done { border-left-color: var(--ok); }
+.wp-badge.is-done b { color: var(--ok); }
+
+/* Ran out of time. Over, but nothing went wrong. */
+.wp-badge.is-dead b { color: var(--text-faint); }
+
+/* Disputed or blocked: something did go wrong. */
+.wp-badge.is-bad {
+    border-color: rgba(255, 90, 110, .35);
+    border-left-color: var(--danger);
+}
+.wp-badge.is-bad b { color: var(--danger); }
+
+/* The summary is the only prose on the page, so it gets a measure it can be
+   read at rather than being stretched across the column. */
+.wp-summary {
+    max-width: 54ch;
+    margin-top: 6px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text-muted);
+}
+
+.wp-pay { white-space: nowrap; }
+.wp-pay b { font-size: 16px; color: var(--text); }
+.wp-pay i { font-style: normal; font-size: 11px; color: var(--text-faint); margin-left: 3px; }
+
+.wp-when { white-space: nowrap; font-size: 12px; color: var(--text-muted); }
+
+/* Right-aligned under the timing they qualify, and wrapping rather than pushing
+   the column wider - a custodian sees two, a worker one. */
+.wp-acts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 5px;
+    margin-top: 10px;
+}
+
+.wp-do { font-size: 11px; flex: none; }
+
+/* Only the ones that can actually fire are lit. The rest stay visible, and
+   disabled, because WHY a worker cannot start yet is the useful half of the
+   answer - the reason is on the button's tooltip. */
+.wp-do.is-live {
+    color: var(--gold);
+    border-color: rgba(242, 183, 60, .38);
+    background: var(--gold-soft);
+}
+.wp-do.is-live:hover { color: var(--gold-hot); background: rgba(242, 183, 60, .19); }
+
+.wp-form .cp-field { margin-top: 12px; }
+.wp-form .cp-grid { align-items: end; }

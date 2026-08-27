@@ -2061,6 +2061,9 @@ async function loadDetails(dao) {
     const proposals = fetchProposals(dao)
     if (proposals) jobs.push(proposals)
 
+    const worker = fetchWorker(dao)
+    if (worker) jobs.push(worker)
+
     if (jobs.length) {
         startPhase(jobs.length)
         await Promise.all(jobs)
@@ -2074,6 +2077,8 @@ async function openDetails(id) {
     detailsKind = 'dao'
     detailsTab = 'proposals'
     periodFormOpen = false
+    wpForm = null
+    wpFilter = 'live'
 
     // Start from the slate already cast, so the boxes show what you voted for
     // rather than an empty list you have to reconstruct from memory. Re-casting
@@ -2359,6 +2364,8 @@ function buildDetails(dao) {
         </section>`
 
     const openProps = (props ?? []).filter((p) => p.state === MSIG_OPEN && !isExpired(p)).length
+    const wp = hasWorkerProposals(dao) ? workerCache.get(dao.id) : null
+    const liveWork = wp ? wp.props.filter(wpIsLive).length : 0
     const due = dao.nextElection
 
     return `
@@ -2387,6 +2394,12 @@ function buildDetails(dao) {
                         data-tab="proposals" role="tab" type="button">
                     Proposals <span class="count">${props ? openProps : '…'}</span>
                 </button>
+                ${!hasWorkerProposals(dao) ? '' : `
+                    <button class="switch-btn${detailsTab === 'worker' ? ' is-on' : ''}"
+                            data-tab="worker" role="tab" type="button">
+                        Worker proposals <span class="count">${
+                            wp === undefined ? '…' : wp === null ? '!' : liveWork}</span>
+                    </button>`}
             </div>
 
             <p class="panel-note" id="detailsNote" hidden></p>
@@ -2403,7 +2416,7 @@ function buildDetails(dao) {
                     </table>
                 </section>
                 ${candBlock}
-            ` : propBlock}
+            ` : detailsTab === 'worker' ? buildWorkerBlock(dao) : propBlock}
         </div>`
 }
 
@@ -2537,6 +2550,24 @@ detailsEl.addEventListener('click', async (e) => {
             `Vote for ${[...pickedCandidates].join(', ')}`)
     }
 
+    if (e.target.closest('#wpOpen')) {
+        const wp = workerCache.get(dao.id)
+        if (!wp) return
+        wpForm = wpBlank(wp)
+        detailsNote(null)
+        return renderDetails()
+    }
+    if (e.target.closest('#wpCancel')) { wpForm = null; return renderDetails() }
+    if (e.target.closest('#wpSubmit')) return submitWorkerCreate(dao)
+
+    if (e.target.closest('#wpToggle')) {
+        wpFilter = wpFilter === 'live' ? 'all' : 'live'
+        return renderDetails()
+    }
+
+    const wpDo = e.target.closest('[data-wp-act]')
+    if (wpDo) return wpAct(dao, wpDo.dataset.wpAct, wpDo.dataset.wpId)
+
     if (e.target.closest('#copyProp')) {
         const shown = (proposalsCache.get(dao.id) ?? []).filter(propMatches)
         const one = shown.filter((p) => pickedProposals.has(p.proposal_name))
@@ -2600,6 +2631,768 @@ async function refreshProposals(dao) {
     proposalsCache.delete(dao.id)
     pickedProposals = new Set()
     await loadDetails(dao)
+}
+
+// ── Worker proposals (prop.worlds) ────────────────────────────────────────
+//
+// A different system from the council multisigs on msig.worlds, and the reason
+// it gets its own tab. A msig proposal is a transaction the council signs; a
+// worker proposal is a *job* — someone offers to do work for a fee, the council
+// votes on whether it is worth doing, the worker does it, and the council votes
+// again on whether it was done. The money moves through an escrow, not through
+// the proposal.
+//
+// Source: Alien-Worlds/eosdac-contracts, contracts/dacproposals. The directory
+// registers prop.worlds as account type PROPOSALS (6) for every DAO — but only
+// the six unions actually use it, and all six syndicate scopes hold zero rows.
+// That is why the tab is the unions' alone.
+//
+// The state machine, from dacproposals.hpp:
+//
+//   pendingappr ──votes──▶ apprvtes ──startwork──▶ inprogress
+//        │                                              │
+//        └── expiry ──▶ expired                    completework
+//                                                       ▼
+//   completed ◀── finalize ── apprfinvtes ◀──votes── pendingfin
+//                                  │                    │
+//                                  └─── dispute ──▶ indispute
+//
+// The two vote rounds are counted separately against different thresholds, and
+// `updpropvotes` moves the row into the `*vtes` state the moment its threshold
+// is met — so the stored state already answers "is there enough?", and the tally
+// below only has to say by how much.
+const WP_CONTRACT = 'prop.worlds'
+
+const WP_PENDING    = 'pendingappr'
+const WP_APPROVED   = 'apprvtes'
+const WP_WORKING    = 'inprogress'
+const WP_FINALIZING = 'pendingfin'
+const WP_FINAPPR    = 'apprfinvtes'
+const WP_EXPIRED    = 'expired'
+const WP_DISPUTED   = 'indispute'
+const WP_COMPLETED  = 'completed'
+const WP_BLOCKED    = 'blocked'
+
+// Internal vote names. `voteprop` and `votepropfin` take the PUBLIC name
+// (approve / deny / abstain) and translate; the propvotes table stores the
+// internal one. Both appear here because the actions send one and the tally
+// reads the other.
+const WP_VOTE_YES     = 'propapprove'
+const WP_VOTE_NO      = 'propdeny'
+const WP_VOTE_FIN_YES = 'finalapprove'
+const WP_VOTE_FIN_NO  = 'finaldeny'
+
+const WP_LABEL = {
+    [WP_PENDING]:    'voting',
+    [WP_APPROVED]:   'approved',
+    [WP_WORKING]:    'in progress',
+    [WP_FINALIZING]: 'finalizing',
+    [WP_FINAPPR]:    'ready to pay',
+    [WP_EXPIRED]:    'expired',
+    [WP_DISPUTED]:   'in dispute',
+    [WP_COMPLETED]:  'completed',
+    [WP_BLOCKED]:    'blocked',
+}
+
+// Five tones, by what the state asks of a reader: waiting on votes, cleared to
+// act, work under way, finished, or dead.
+const WP_TONE = {
+    [WP_PENDING]:    'wait',
+    [WP_APPROVED]:   'go',
+    [WP_WORKING]:    'work',
+    [WP_FINALIZING]: 'wait',
+    [WP_FINAPPR]:    'go',
+    [WP_EXPIRED]:    'dead',
+    [WP_DISPUTED]:   'bad',
+    [WP_COMPLETED]:  'done',
+    [WP_BLOCKED]:    'bad',
+}
+
+// Contract defaults from dacproposals.hpp, used only if the singleton cannot be
+// read. Every union today carries 3 / 2 / 30d / 7d / 120 TLM.
+const WP_CONFIG_FALLBACK = {
+    proposal_threshold: 3,
+    finalize_threshold: 2,
+    approval_duration: 2592000,
+    min_proposal_duration: 604800,
+}
+
+let workerCache = new Map()   // dao.id -> { props, votes, config, arbiters, ... } | null
+let wpFilter = 'live'         // live, or all
+let wpForm = null             // the new-proposal form, when open
+
+// Only the unions run worker proposals, so asking the other six for tables that
+// are always empty would be five wasted reads per details open.
+const hasWorkerProposals = (dao) => dao.group === 'union'
+
+const wpTime = (s) => Date.parse(`${s}Z`)
+
+// The stored state is not the whole truth in the approval round: `expiry` passes
+// silently and the row only flips to `expired` when someone next votes on it.
+// Eleven of the twelve non-completed proposals on chain today read `pendingappr`
+// or `apprvtes` while being long past their window.
+//
+// The finalize round has no expiry at all — `_voteprop` checks `has_not_expired`
+// only in the approval branch and `finalize` never checks it — so a proposal
+// waiting to be paid is NOT stale however old its `expiry` field looks.
+// The second way the stored state can be out of date: the `*vtes` states are a
+// verdict cached at the moment of the last vote, and count_votes ignores — and
+// erases — votes from accounts that have since left the council. So a proposal
+// can be recorded as having enough while a recount today says it does not.
+// eyekeunn's dngoggqgd is exactly this: stored `apprfinvtes`, and not one of the
+// custodians who voted for it still holds a seat.
+//
+// startwork and finalize both recount before they act, so the recount is what
+// actually governs. The badge follows it rather than the cached label, and says
+// so on hover.
+function wpEffectiveState(p, tally) {
+    const inApprovalRound = p.state === WP_PENDING || p.state === WP_APPROVED
+    if (inApprovalRound && wpTime(p.expiry) <= Date.now()) return WP_EXPIRED
+    if (tally && tally.yes < tally.need) {
+        if (p.state === WP_APPROVED) return WP_PENDING
+        if (p.state === WP_FINAPPR) return WP_FINALIZING
+    }
+    return p.state
+}
+
+const WP_LIVE = new Set([WP_PENDING, WP_APPROVED, WP_WORKING, WP_FINALIZING, WP_FINAPPR, WP_DISPUTED])
+const wpIsLive = (p) => WP_LIVE.has(wpEffectiveState(p))
+
+// Which round the row is in, or has just come through. Terminal states still
+// show a tally, because "completed, 2 of 2" is the record of how it passed.
+const wpRound = (p) =>
+    (p.state === WP_FINALIZING || p.state === WP_FINAPPR ||
+     p.state === WP_COMPLETED  || p.state === WP_DISPUTED) ? 'finalize' : 'approval'
+
+// Whether votes are still being taken, which is a narrower question than which
+// round it is in.
+function wpVotingOpen(p) {
+    const s = wpEffectiveState(p)
+    return s === WP_PENDING || s === WP_APPROVED || s === WP_FINALIZING || s === WP_FINAPPR
+}
+
+// A faithful port of dacproposals::count_votes. Three things add up to one
+// approval: a custodian who voted this way directly, plus every custodian who
+// delegated THIS proposal to them, plus every custodian who has not voted here
+// at all and has delegated this proposal's CATEGORY to them.
+//
+// Votes from accounts no longer seated are skipped — the contract goes further
+// and erases those rows as it counts, so skipping them is what the chain itself
+// would do on the next vote.
+//
+// No union has ever used delegation: every vote row on chain is direct and not
+// one carries a category_id. The weighting is implemented anyway, because a
+// tally that quietly ignored it would be wrong the first time someone used it.
+function wpCountVotes(dao, prop, wanted, allVotes) {
+    const seated = new Set(dao.custodians)
+    const delegatedHere = new Map()
+    const approvers = new Set()
+    const voted = new Set()
+
+    for (const v of allVotes) {
+        if (v.proposal_id !== prop.proposal_id || !seated.has(v.voter)) continue
+        voted.add(v.voter)
+        if (v.delegatee) delegatedHere.set(v.delegatee, (delegatedHere.get(v.delegatee) ?? 0) + 1)
+        else if (v.vote === wanted) approvers.add(v.voter)
+    }
+
+    const delegatedCategory = new Map()
+    for (const name of seated) {
+        if (voted.has(name)) continue
+        const row = allVotes.find((v) => v.voter === name && v.delegatee &&
+            v.category_id != null && Number(v.category_id) === Number(prop.category))
+        if (row) delegatedCategory.set(row.delegatee, (delegatedCategory.get(row.delegatee) ?? 0) + 1)
+    }
+
+    let count = 0
+    for (const name of approvers) {
+        count += 1 + (delegatedHere.get(name) ?? 0) + (delegatedCategory.get(name) ?? 0)
+    }
+    return count
+}
+
+function wpTally(dao, p, wp) {
+    const round = wpRound(p)
+    const yes = round === 'finalize' ? WP_VOTE_FIN_YES : WP_VOTE_YES
+    const no  = round === 'finalize' ? WP_VOTE_FIN_NO  : WP_VOTE_NO
+    return {
+        round,
+        yes:  wpCountVotes(dao, p, yes, wp.votes),
+        no:   wpCountVotes(dao, p, no,  wp.votes),
+        need: round === 'finalize' ? wp.config.finalize_threshold : wp.config.proposal_threshold,
+    }
+}
+
+// What this account has already said about this proposal, so a button can read
+// "approved" rather than offering a vote that would only overwrite itself.
+function wpMyVote(p, wp) {
+    if (!session) return null
+    const me = String(session.actor)
+    return wp.votes.find((v) => v.proposal_id === p.proposal_id && v.voter === me)?.vote ?? null
+}
+
+// `finalize` refuses until min_proposal_duration has passed — a week on every
+// union. It is the "necessary time" a finished job waits out before it can be
+// paid, and it runs from CREATION, not from completework.
+const wpPayableAt = (p, wp) => wpTime(p.created_at) + (wp.config.min_proposal_duration * 1000)
+
+// The proposal document. Workers put either an IPFS CID or a plain URL in
+// `content_hash` and both appear on chain today, so both are made clickable.
+function wpDocUrl(hash) {
+    const s = String(hash ?? '').trim()
+    if (/^https?:\/\//i.test(s)) return s
+    if (/^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})$/.test(s)) return `https://ipfs.io/ipfs/${s}`
+    return null
+}
+
+// ── Reading ───────────────────────────────────────────────────────────────
+
+function fetchWorker(dao) {
+    if (!hasWorkerProposals(dao)) return null
+
+    const actor = session ? String(session.actor) : null
+
+    // Half of what is cached here — membership, the fee deposit, which buttons
+    // are lit — is about the connected account, so signing in or out invalidates
+    // it. Stamping the cache with whose reads they were makes that automatic:
+    // there is no sign-in path that can forget to clear it, because the check is
+    // here rather than at the three call sites that change identity.
+    const held = workerCache.get(dao.id)
+    if (held !== undefined && (held?.actor ?? null) === actor) return null
+    const one = actor ? { lower_bound: actor, upper_bound: actor, limit: 1 } : null
+
+    return Promise.all([
+        getRows(WP_CONTRACT, dao.id, 'proposals', { limit: 500 }),
+        getRows(WP_CONTRACT, dao.id, 'propvotes', { limit: 1000 }),
+        postRows(WP_CONTRACT, dao.id, 'configs', { limit: 1 }).catch(() => []),
+        getRows(WP_CONTRACT, dao.id, 'arbwhitelist', { limit: 500 }).catch(() => []),
+        getRows(WP_CONTRACT, dao.id, 'recwl', { limit: 500 }).catch(() => []),
+        // Every action in this contract calls assertValidMember, which wants the
+        // account registered against the LATEST member terms, not merely
+        // registered. Reading it turns an unreadable wallet error into a
+        // sentence, before anything is signed.
+        !one ? null : getRows(dao.tokenContract, dao.id, 'members', one).catch(() => []),
+        !one ? null : getRows(dao.tokenContract, dao.id, 'memberterms', { limit: 100 }).catch(() => []),
+        // The fee is taken from a deposit balance the contract holds, not from
+        // the wallet, so creating a proposal may need a transfer first.
+        !one ? null : getRows(WP_CONTRACT, WP_CONTRACT, 'deposits', one).catch(() => []),
+    ])
+        .then(([props, votes, cfg, arbiters, receivers, member, terms, deposit]) => {
+            // The singleton stores its fields as a key/value list of variants,
+            // exactly like dacglobals — each value is [type, value].
+            const c = {}
+            for (const kv of cfg[0]?.data ?? []) c[kv.key] = kv.value?.[1]
+
+            const latest = (terms ?? []).reduce((n, t) => Math.max(n, Number(t.version) || 0), 0)
+            const agreed = Number(member?.[0]?.agreedtermsversion ?? 0)
+
+            workerCache.set(dao.id, {
+                actor,
+                props: props.sort((a, b) => wpTime(b.created_at) - wpTime(a.created_at)),
+                votes,
+                config: {
+                    proposal_threshold: Number(c.proposal_threshold) || WP_CONFIG_FALLBACK.proposal_threshold,
+                    finalize_threshold: Number(c.finalize_threshold) || WP_CONFIG_FALLBACK.finalize_threshold,
+                    approval_duration: Number(c.approval_duration) || WP_CONFIG_FALLBACK.approval_duration,
+                    min_proposal_duration: Number(c.min_proposal_duration) || 0,
+                    proposal_fee: c.proposal_fee ?? null,
+                },
+                // Rating 0 means listed but not active; createprop checks for
+                // rating > 0 on the arbiter, so a 0 is not offerable.
+                arbiters: arbiters.filter((a) => Number(a.rating) > 0).map((a) => a.arbiter).sort(),
+                // Presence alone is what createprop requires of the proposer —
+                // unlike the arbiter, the receiver's rating is not checked.
+                receivers: new Set(receivers.map((r) => r.receiver)),
+                // null when signed out: unknown, which is not the same as no.
+                member: !one ? null : (latest > 0 && agreed === latest),
+                agreedTerms: agreed,
+                latestTerms: latest,
+                deposit: deposit?.[0]?.deposit ?? null,
+            })
+        })
+        .catch((err) => { console.error('worker proposals:', err); workerCache.set(dao.id, null) })
+}
+
+async function refreshWorker(dao) {
+    workerCache.delete(dao.id)
+    await fetchWorker(dao)
+}
+
+// ── The list ──────────────────────────────────────────────────────────────
+
+// The state is the first thing anyone wants from one of these rows, so it is the
+// first column and it is drawn at the size of the decision it carries.
+function wpBadge(p, tally) {
+    const state = wpEffectiveState(p, tally)
+    const cached = `The chain still records this as "${WP_LABEL[p.state] ?? p.state}".`
+
+    let title = `State on chain: ${p.state}`
+    if (state === WP_EXPIRED && p.state !== WP_EXPIRED) {
+        title = `${cached} Its voting window closed ${isoDay(wpTime(p.expiry))}, and the row only ` +
+            'flips to expired when someone next votes on it.'
+    } else if (state !== p.state) {
+        title = `${cached} That was true when the last vote was cast, but a recount today finds only ` +
+            `${tally.yes} of the ${tally.need} it needs: approvals from custodians who have since lost ` +
+            'their seats do not count, and the contract recounts before it acts.'
+    }
+
+    return `<td class="wp-state">
+        <span class="wp-badge is-${WP_TONE[state] ?? 'wait'}" title="${esc(title)}">
+            <b>${esc(WP_LABEL[state] ?? state)}</b>
+            <i>${tally.round === 'finalize' ? 'finalize round' : 'approval round'}</i>
+        </span>
+    </td>`
+}
+
+// Same shape as the msig approvals badge, and for the same reason: how far along
+// the votes are is what the column gets scanned for.
+function wpVotesCell(p, tally) {
+    const enough = tally.yes >= tally.need
+    const title = `${tally.yes} of the ${tally.need} approvals this round needs` +
+        (tally.no ? `, and ${tally.no} against` : '')
+
+    if (!wpVotingOpen(p)) {
+        return `<td class="approvals is-past" title="${esc(title)}">${
+            tally.yes}<span class="app-need">/${tally.need}</span></td>`
+    }
+
+    const tone = enough ? 'is-enough' : tally.yes > 0 ? 'is-part' : 'is-none'
+    const pips = Array.from({ length: Math.max(tally.need, tally.yes) }, (_, i) =>
+        `<i class="${i < tally.yes ? 'on' : ''}"></i>`).join('')
+
+    return `
+    <td class="approvals ${tone}" title="${esc(title)}">
+        <span class="app-badge">
+            <span class="app-n">${tally.yes}<span class="app-need">/${tally.need}</span></span>
+            <span class="pips">${pips}</span>
+            <span class="app-tag">${enough ? 'ready' : `needs ${tally.need - tally.yes} more`}</span>
+        </span>
+    </td>`
+}
+
+const wpBtn = (act, id, label, blocked) =>
+    `<button class="act-mini wp-do${blocked ? '' : ' is-live'}" data-wp-act="${act}" data-wp-id="${esc(id)}"
+        ${blocked ? `disabled title="${esc(blocked)}"` : ''}>${esc(label)}</button>`
+
+// What this account may do to this row, right now. A button that is offered but
+// cannot fire carries the reason: a worker wanting to start needs to be told it
+// is one approval short, not left to guess at a wallet error.
+function wpRowActions(dao, p, wp, tally) {
+    if (!session) return ''
+    const me = String(session.actor)
+    const id = p.proposal_id
+    const state = wpEffectiveState(p)
+    const amCustodian = dao.custodians.includes(me)
+    const amWorker = p.proposer === me
+    const amArbiter = p.arbiter === me
+    const out = []
+
+    // Every action in the contract asserts membership first, so this blocks all
+    // of them rather than being repeated on each.
+    const terms = wp.member === false
+        ? `${me} has not agreed to this DAO's latest member terms (agreed version ${
+              wp.agreedTerms || 'none'}, current is ${wp.latestTerms}), which every action here requires.`
+        : null
+
+    if (amCustodian && (state === WP_PENDING || state === WP_APPROVED)) {
+        const mine = wpMyVote(p, wp)
+        out.push(wpBtn('approve', id, mine === WP_VOTE_YES ? 'approved' : 'approve',
+            terms ?? (mine === WP_VOTE_YES ? 'You have already approved this one.' : null)))
+        out.push(wpBtn('deny', id, mine === WP_VOTE_NO ? 'denied' : 'deny',
+            terms ?? (mine === WP_VOTE_NO ? 'You have already voted against this one.' : null)))
+    }
+
+    if (amCustodian && (state === WP_FINALIZING || state === WP_FINAPPR)) {
+        const mine = wpMyVote(p, wp)
+        out.push(wpBtn('finapprove', id, mine === WP_VOTE_FIN_YES ? 'work accepted' : 'accept work',
+            terms ?? (mine === WP_VOTE_FIN_YES ? 'You have already accepted this work.' : null)))
+        out.push(wpBtn('findeny', id, mine === WP_VOTE_FIN_NO ? 'work rejected' : 'reject work',
+            terms ?? (mine === WP_VOTE_FIN_NO ? 'You have already rejected this work.' : null)))
+    }
+
+    // startwork refuses without it, so the arbiter's agreement is a stage of its
+    // own rather than a detail on the row.
+    if (amArbiter && !p.arbiter_agreed && (state === WP_PENDING || state === WP_APPROVED)) {
+        out.push(wpBtn('arbagree', id, 'agree to arbitrate', terms))
+    }
+
+    if (amWorker && (state === WP_PENDING || state === WP_APPROVED)) {
+        out.push(wpBtn('startwork', id, 'start work',
+            terms
+            ?? (tally.yes < tally.need ? `Needs ${tally.need} approvals and has ${tally.yes}.` : null)
+            ?? (!p.arbiter_agreed
+                ? `${p.arbiter} has not agreed to arbitrate, which the contract requires before work starts.`
+                : null)))
+    }
+
+    if (amWorker && state === WP_WORKING) {
+        out.push(wpBtn('completework', id, 'mark complete', terms))
+    }
+
+    // finalize carries no require_auth — anyone may push a proposal that has
+    // cleared both gates over the line, and the money goes to the worker either
+    // way. That is why it is offered to everyone signed in rather than to the
+    // worker alone.
+    if (state === WP_FINALIZING || state === WP_FINAPPR) {
+        const payable = wpPayableAt(p, wp)
+        out.push(wpBtn('finalize', id, 'finalize and pay',
+            tally.yes < tally.need
+                ? `Needs ${tally.need} approvals to finalize and has ${tally.yes}.`
+                : Date.now() < payable
+                    ? `The contract holds every proposal for ${fmtDays(wp.config.min_proposal_duration)} from ` +
+                      `creation. This one can be finalized ${isoDay(payable)}.`
+                    : null))
+    }
+
+    return out.length ? `<div class="wp-acts">${out.join('')}</div>` : ''
+}
+
+function wpRow(dao, p, wp) {
+    const tally = wpTally(dao, p, wp)
+    const doc = wpDocUrl(p.content_hash)
+    const created = wpTime(p.created_at)
+    const state = wpEffectiveState(p)
+
+    // Which clock matters depends on the stage: an open vote is racing its
+    // expiry, a finished job is waiting out its hold, and everything else is
+    // simply history.
+    let when = `created ${fmtAge(Date.now() - created)} ago`
+    if (state === WP_PENDING || state === WP_APPROVED) {
+        when = `voting ends in ${fmtDays((wpTime(p.expiry) - Date.now()) / 1000)}`
+    } else if (state === WP_FINALIZING || state === WP_FINAPPR) {
+        const left = wpPayableAt(p, wp) - Date.now()
+        when = left > 0 ? `payable in ${fmtDays(left / 1000)}` : 'past its hold'
+    }
+
+    return `
+    <tr>
+        ${wpBadge(p, tally)}
+        <td>
+            <b class="row-title">${doc
+                ? `<a href="${esc(doc)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
+                : esc(p.title)}</b>
+            <span class="row-meta">
+                <span class="who" title="The worker — who raised this and who gets paid">${esc(p.proposer)}</span>
+                ${WATCHED.has(p.proposer)
+                    ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                <span class="row-id">${esc(p.proposal_id)}</span>
+            </span>
+            <p class="wp-summary">${esc(p.summary)}</p>
+            <span class="row-meta">
+                <span class="d-dim">arbiter</span>
+                <span class="who">${esc(p.arbiter)}</span>
+                ${p.arbiter_agreed
+                    ? '<span class="pill is-completed" title="The arbiter has agreed to take this on">agreed</span>'
+                    : '<span class="pill is-expired" title="startwork is refused until the arbiter agrees">not agreed</span>'}
+            </span>
+        </td>
+        <td class="num wp-pay">
+            <b>${esc(fmtAmount(p.proposal_pay.quantity))}</b>
+            <i>${esc(assetCode(p.proposal_pay.quantity))}</i>
+            <span class="d-dim" title="Paid to the arbiter out of the same escrow">+${
+                esc(fmtAmount(p.arbiter_pay.quantity))} arb</span>
+        </td>
+        ${wpVotesCell(p, tally)}
+        <td class="num wp-when">
+            ${esc(when)}
+            <span class="d-dim" title="How long the work is expected to take. The escrow locks for twice it.">${
+                esc(fmtDays(p.job_duration))} job</span>
+            ${wpRowActions(dao, p, wp, tally)}
+        </td>
+    </tr>`
+}
+
+// ── Raising one ───────────────────────────────────────────────────────────
+
+// The fee is not paid with the createprop transaction. It is drawn from a
+// deposit balance prop.worlds keeps per account, topped up by an ordinary
+// transfer — `receive` credits ANY transfer to the contract regardless of memo.
+// So a proposal from an account with no deposit is two actions, not one.
+function wpFeeShortfall(wp) {
+    const fee = wp.config.proposal_fee
+    if (!fee || assetUnits(fee.quantity) <= 0) return null
+    const have = wp.deposit && wp.deposit.contract === fee.contract ? assetUnits(wp.deposit.quantity) : 0
+    const short = assetUnits(fee.quantity) - have
+    if (short <= 0) return null
+    return {
+        contract: fee.contract,
+        quantity: unitsToAsset(short, assetPrecision(fee.quantity), assetCode(fee.quantity)),
+    }
+}
+
+const wpBlank = (wp) => ({
+    title: '',
+    summary: '',
+    url: '',
+    arbiter: wp.arbiters[0] ?? '',
+    pay: '',
+    arbPay: '',
+    days: 7,
+    category: 0,
+})
+
+// Uncontrolled fields, read back on submit — typing into a textarea must never
+// trigger a re-render that throws away the caret.
+function readWpForm() {
+    if (!wpForm) return null
+    const q = (sel) => detailsEl.querySelector(sel)
+    wpForm.title = q('#wpTitle')?.value ?? ''
+    wpForm.summary = q('#wpSummary')?.value ?? ''
+    wpForm.url = q('#wpUrl')?.value ?? ''
+    wpForm.arbiter = q('#wpArbiter')?.value ?? ''
+    wpForm.pay = q('#wpPay')?.value ?? ''
+    wpForm.arbPay = q('#wpArbPay')?.value ?? ''
+    wpForm.days = Number(q('#wpDays')?.value) || 7
+    wpForm.category = Number(q('#wpCategory')?.value) || 0
+    return wpForm
+}
+
+function wpFormHtml(dao, wp) {
+    const fee = wp.config.proposal_fee
+    const short = wpFeeShortfall(wp)
+    const f = wpForm
+    const sym = fee ? assetCode(fee.quantity) : TLM_SYMBOL
+    const me = session ? String(session.actor) : ''
+
+    // Everything createprop checks before it will accept the row. Stated up
+    // front, because each one is a plain refusal from the contract otherwise.
+    const blocks = []
+    if (!session) blocks.push('Connect a wallet to raise a proposal.')
+    else {
+        if (!wp.receivers.has(me)) {
+            blocks.push(`${me} is not on this DAO's receiver whitelist, which createprop requires of the ` +
+                'proposer. A custodian has to add you with addrecwl first.')
+        }
+        if (wp.member === false) {
+            blocks.push(`${me} has not agreed to the latest member terms (version ${wp.latestTerms}).`)
+        }
+        if (!wp.arbiters.length) blocks.push('This DAO has no active arbiter on its whitelist.')
+    }
+
+    return `
+    <div class="d-propose-form wp-form">
+        <div class="cp-grid">
+            <label class="cp-field">
+                <span>Title</span>
+                <input id="wpTitle" type="text" maxlength="255" value="${esc(f.title)}"
+                       placeholder="What the job is">
+            </label>
+            <label class="cp-field">
+                <span>Arbiter</span>
+                <select id="wpArbiter">
+                    ${wp.arbiters.map((a) => `<option value="${esc(a)}"${
+                        a === f.arbiter ? ' selected' : ''}>${esc(a)}</option>`).join('')
+                        || '<option value="">none available</option>'}
+                </select>
+            </label>
+        </div>
+
+        <label class="cp-field">
+            <span>Summary</span>
+            <textarea id="wpSummary" rows="3" maxlength="511"
+                      placeholder="A few lines the council will read in the list">${esc(f.summary)}</textarea>
+        </label>
+
+        <label class="cp-field">
+            <span>Document</span>
+            <input id="wpUrl" type="text" value="${esc(f.url)}" spellcheck="false"
+                   placeholder="An IPFS CID or a link to the full proposal">
+        </label>
+
+        <div class="cp-grid">
+            <label class="cp-field">
+                <span>Pay (${esc(sym)})</span>
+                <input id="wpPay" type="number" min="0" step="0.0001" value="${esc(f.pay)}"
+                       placeholder="130120">
+            </label>
+            <label class="cp-field">
+                <span>Arbiter pay (${esc(sym)})</span>
+                <input id="wpArbPay" type="number" min="0" step="0.0001" value="${esc(f.arbPay)}"
+                       placeholder="1000">
+            </label>
+            <label class="cp-field">
+                <span>Job length (days)</span>
+                <input id="wpDays" type="number" min="1" max="365" value="${f.days}">
+            </label>
+            <label class="cp-field">
+                <span>Category</span>
+                <input id="wpCategory" type="number" min="0" max="65535" value="${f.category}">
+            </label>
+        </div>
+
+        <p class="act-blurb">Paid from <code>${esc(dao.treasury ?? '—')}</code>, this DAO's
+            proposal funds, into escrow when work starts — and out to you when the council finalizes.
+            ${fee ? `Raising it costs <b>${esc(fee.quantity)}</b>${short
+                ? `, and this account's deposit is short, so <b>${esc(short.quantity)}</b> will be transferred
+                   to <code>${WP_CONTRACT}</code> in the same transaction.`
+                : ', already covered by this account\'s deposit with the contract.'}` : ''}</p>
+
+        ${blocks.map((b) => `<p class="act-blurb is-note">${esc(b)}</p>`).join('')}
+
+        <div class="d-actions">
+            <button class="act-go" id="wpSubmit" type="button"
+                    ${busy || blocks.length ? 'disabled' : ''}>Create worker proposal</button>
+            <button class="act-mini" id="wpCancel" type="button">cancel</button>
+        </div>
+    </div>`
+}
+
+async function submitWorkerCreate(dao) {
+    const wp = workerCache.get(dao.id)
+    const f = readWpForm()
+    if (!wp || !f || !session) return
+
+    const me = String(session.actor)
+    const fee = wp.config.proposal_fee
+    const sym = fee ? assetCode(fee.quantity) : TLM_SYMBOL
+    const prec = fee ? assetPrecision(fee.quantity) : 4
+    const contract = fee ? fee.contract : TLM_CONTRACT
+
+    // The contract's own bounds, checked here so a refusal costs nothing.
+    if (f.title.trim().length < 4) return detailsNote('The title has to be more than three characters.', 'error')
+    if (f.summary.trim().length < 4) return detailsNote('The summary has to be more than three characters.', 'error')
+    if (!f.arbiter) return detailsNote('Pick an arbiter.', 'error')
+    if (f.arbiter === me) return detailsNote('You cannot arbitrate your own proposal.', 'error')
+
+    const pay = toAsset(f.pay, prec, sym)
+    if (!pay) return detailsNote('Enter a pay amount above zero.', 'error')
+    // Not a contract rule, but startwork transfers the arbiter's pay to escrow
+    // as its own transfer, and a zero-quantity transfer is rejected — so a
+    // proposal created with nothing for the arbiter can never start.
+    const arbPay = toAsset(f.arbPay, prec, sym)
+    if (!arbPay) {
+        return detailsNote('The arbiter needs a pay amount above zero — startwork sends it as its own ' +
+            'transfer, and a transfer of zero is rejected.', 'error')
+    }
+
+    const actions = []
+    const short = wpFeeShortfall(wp)
+    if (short) {
+        actions.push({
+            account: short.contract, name: 'transfer', authorization: auth(),
+            data: { from: me, to: WP_CONTRACT, quantity: short.quantity, memo: `Proposal fee for ${dao.id}` },
+        })
+    }
+
+    actions.push({
+        account: WP_CONTRACT, name: 'createprop', authorization: auth(),
+        data: {
+            proposer: me,
+            title: f.title.trim(),
+            summary: f.summary.trim(),
+            arbiter: f.arbiter,
+            proposal_pay: { quantity: pay, contract },
+            arbiter_pay: { quantity: arbPay, contract },
+            content_hash: f.url.trim(),
+            id: proposalName(),
+            category: Math.max(0, Math.min(65535, Math.round(f.category))),
+            job_duration: Math.max(1, Math.round(f.days)) * 86400,
+            dac_id: dao.id,
+        },
+    })
+
+    wpForm = null
+    return submitDetails(actions, `Raise "${f.title.trim()}"`, () => refreshWorker(dao))
+}
+
+// ── The tab ───────────────────────────────────────────────────────────────
+
+function buildWorkerBlock(dao) {
+    const wp = workerCache.get(dao.id)
+
+    if (wp === undefined) {
+        return '<section class="d-block"><h3>Worker proposals <span class="d-dim">reading…</span></h3></section>'
+    }
+    if (wp === null) {
+        return `<section class="d-block">
+            <h3>Worker proposals <span class="d-dim">unavailable</span></h3>
+            <p class="d-line d-dim">${esc(WP_CONTRACT)} could not be read for ${esc(dao.id)}.</p>
+        </section>`
+    }
+
+    const shown = wpFilter === 'live' ? wp.props.filter(wpIsLive) : wp.props
+    const live = wp.props.filter(wpIsLive).length
+    const c = wp.config
+
+    return `
+    <section class="d-block">
+        <h3>Worker proposals
+            <span class="d-dim">${shown.length} of ${wp.props.length}</span>
+        </h3>
+
+        <p class="act-blurb">Jobs offered to this union: the council votes to approve the work,
+            the worker does it, and the council votes again before the escrow pays out.
+            <b>${c.proposal_threshold}</b> approvals let work start and <b>${c.finalize_threshold}</b>
+            release the money, a proposal has ${esc(fmtDays(c.approval_duration))} to collect the first set,
+            and none can be paid until ${esc(fmtDays(c.min_proposal_duration))} after it was raised.</p>
+
+        ${wpForm ? wpFormHtml(dao, wp) : `
+            <button class="card-btn" id="wpOpen" type="button">Raise a worker proposal</button>`}
+
+        <div class="d-filter">
+            <span class="${wpFilter === 'live' ? 'is-on' : ''}">Live</span>
+            <button class="toggle ${wpFilter === 'all' ? 'is-right' : ''}"
+                    id="wpToggle" type="button" role="switch"
+                    aria-checked="${wpFilter === 'all'}"><i></i></button>
+            <span class="${wpFilter === 'all' ? 'is-on' : ''}">All ${wp.props.length}</span>
+        </div>
+
+        <div class="d-scroll">
+        <table class="d-table wp-table">
+            <thead><tr>
+                <th>State</th><th>Proposal</th><th class="num">Pay</th>
+                <th class="num">Approvals</th><th class="num">Timing</th>
+            </tr></thead>
+            <tbody>
+            ${shown.map((p) => wpRow(dao, p, wp)).join('') || `
+                <tr><td colspan="5" class="d-dim">${wp.props.length
+                    ? `Nothing live — all ${wp.props.length} are finished or expired.`
+                    : 'No worker proposals have been raised here.'}</td></tr>`}
+            </tbody>
+        </table>
+        </div>
+    </section>`
+}
+
+async function wpAct(dao, act, id) {
+    const wp = workerCache.get(dao.id)
+    if (!wp || !session) return
+    const p = wp.props.find((x) => x.proposal_id === id)
+    if (!p) return
+
+    const me = String(session.actor)
+    const dac_id = dao.id
+    const one = (name, data) => [{ account: WP_CONTRACT, name, authorization: auth(), data }]
+    const after = () => refreshWorker(dao)
+
+    switch (act) {
+    case 'approve':
+        return submitDetails(one('voteprop', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
+            `Approve "${p.title}"`, after)
+    case 'deny':
+        return submitDetails(one('voteprop', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
+            `Vote against "${p.title}"`, after)
+    case 'finapprove':
+        return submitDetails(one('votepropfin', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
+            `Accept the work on "${p.title}"`, after)
+    case 'findeny':
+        return submitDetails(one('votepropfin', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
+            `Reject the work on "${p.title}"`, after)
+    case 'arbagree':
+        return submitDetails(one('arbagree', { arbiter: me, proposal_id: id, dac_id }),
+            `Agree to arbitrate "${p.title}"`, after)
+    case 'startwork':
+        return submitDetails(one('startwork', { proposal_id: id, dac_id }),
+            `Start work on "${p.title}"`, after)
+    case 'completework':
+        return submitDetails(one('completework', { proposal_id: id, dac_id }),
+            `Mark "${p.title}" complete`, after)
+    case 'finalize':
+        return submitDetails(one('finalize', { proposal_id: id, dac_id }),
+            `Finalize "${p.title}"`, after)
+    default:
+        return
+    }
 }
 
 // ── MSIG groups: the point allocators ─────────────────────────────────────
@@ -3865,8 +4658,24 @@ async function refreshAll() {
         if (await pickEndpoint()) {
             allocationsCache = new Map()
             pointsCache = new Map()
+            // The three details caches too — the button says everything, and a
+            // details view that kept serving proposals read ten minutes ago
+            // while the grid behind it was current would be the one stale thing
+            // on screen.
+            candidatesCache = new Map()
+            proposalsCache = new Map()
+            workerCache = new Map()
             await Promise.all([loadDaos(), loadSwapTargets(), loadAllocators()])
             await loadPosition()
+
+            // Clearing those caches empties an open details view, so anything
+            // standing has to be filled again rather than left saying "reading…"
+            // with nothing on its way.
+            const open = detailsKind === 'dao' && detailsId ? daoById(detailsId) : null
+            if (open) {
+                await loadDetails(open)
+                if (detailsId === open.id) renderDetails()
+            }
         }
     } finally {
         btn.disabled = false

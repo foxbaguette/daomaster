@@ -405,6 +405,128 @@ with a red `expired` pill instead. They still cannot execute.
 The approvals column is `provided_approvals` over `requested_approvals`, joined
 from the `approvals` table on `proposal_name`.
 
+## Worker proposals
+
+A third details tab, on the six **unions only**. Different system, different
+contract: `prop.worlds` (`dacproposals`, in
+[Alien-Worlds/eosdac-contracts](https://github.com/Alien-Worlds/eosdac-contracts)
+under `contracts/dacproposals`). A msig proposal is a transaction the council
+signs; a worker proposal is a **job** — someone offers to do work for a fee, the
+council votes on whether it is worth doing, the worker does it, and the council
+votes again on whether it was done. The money moves through `escrw.worlds`, not
+through the proposal.
+
+The directory registers `prop.worlds` as account type `PROPOSALS` (6) for
+*every* DAO, which is misleading: only the unions use it, and all six syndicate
+scopes hold zero rows. That registration is also what first sent this app looking
+for the msig proposals in the wrong contract.
+
+### The state machine
+
+```
+pendingappr ──votes──▶ apprvtes ──startwork──▶ inprogress
+     │                                              │
+     └── expiry ──▶ expired                    completework
+                                                    ▼
+completed ◀── finalize ── apprfinvtes ◀──votes── pendingfin
+                               │                    │
+                               └─── dispute ──▶ indispute
+```
+
+Two vote rounds, counted separately against different thresholds. `updpropvotes`
+runs after every vote and moves the row into the matching `*vtes` state as soon
+as its threshold is met, so the stored state already answers "is there enough" —
+the tally only has to say by how much.
+
+Config is a singleton per scope, identical on all six unions today:
+
+| | |
+| --- | --- |
+| `proposal_threshold` | 3 — approvals before work may start |
+| `finalize_threshold` | 2 — approvals before the escrow pays |
+| `approval_duration` | 30 days to collect the first set |
+| `min_proposal_duration` | 7 days from **creation** before anything can be finalized |
+| `proposal_fee` | 120 TLM |
+
+### The stored state lies in two ways, and both are visible on chain
+
+**Expiry passes silently.** `expiry` is only acted on when someone next votes:
+`updpropvotes` writes `expired` at that point and not before. Eleven of the
+twelve non-completed proposals on chain read `pendingappr` or `apprvtes` while
+being long past their window. The badge shows them as expired and says why on
+hover.
+
+This applies to the approval round **only**. `_voteprop` checks
+`has_not_expired()` in the approval branch and not in the finalize branch, and
+`finalize` never checks it at all — so a proposal waiting to be paid is not
+stale however old its `expiry` looks.
+
+**`apprvtes` and `apprfinvtes` are a verdict cached at the last vote.**
+`count_votes` skips — and erases — votes from accounts no longer seated, so a
+recount can fall back below the threshold without the row changing.
+`eyekeunn/dngoggqgd` is exactly this: stored `apprfinvtes`, and not one of the
+custodians who voted for it still holds a seat, so it recounts to 0 of 2.
+`startwork` and `finalize` both recount before acting, so the recount governs;
+the badge follows it and the tooltip explains the disagreement.
+
+### Counting a vote
+
+`count_votes` is ported faithfully. One approval is worth 1, plus 1 for each
+custodian who delegated *this proposal* to that approver, plus 1 for each
+custodian who has not voted here at all and has delegated this proposal's
+*category* to them. No union has ever used delegation — every vote row on chain
+is direct and none carries a `category_id` — but a tally that quietly ignored it
+would be wrong the first time someone used it.
+
+### Actions
+
+Every one of these calls `assertValidMember` first, which wants the account
+registered against the **latest** member terms in `token.worlds`, not merely
+registered. That is read up front so a stale agreement is a sentence rather than
+an unreadable wallet error.
+
+| Action | Call | Who, and when |
+| --- | --- | --- |
+| Approve / deny | `voteprop(custodian, proposal_id, approve\|deny, dac_id)` | seated custodian, approval round, not expired |
+| Accept / reject work | `votepropfin(custodian, proposal_id, approve\|deny, dac_id)` | seated custodian, finalize round |
+| Agree to arbitrate | `arbagree(arbiter, proposal_id, dac_id)` | the named arbiter, approval round |
+| Start work | `startwork(proposal_id, dac_id)` | the worker, once approvals are met **and** the arbiter has agreed |
+| Mark complete | `completework(proposal_id, dac_id)` | the worker, from `inprogress` |
+| Finalize and pay | `finalize(proposal_id, dac_id)` | **anyone** — no `require_auth` — once the finalize votes are met and the 7-day hold has passed |
+
+A button whose preconditions are not met is still shown, disabled, with the
+reason on its tooltip: a worker needs to be told it is one approval short, not
+left guessing.
+
+`arbagree` is included because `startwork` refuses without it, which makes the
+arbiter's agreement a stage rather than a detail. Five of the 86 proposals on
+chain have never had it.
+
+Cancelling (`cancelprop`, `cancelwip`) and disputing (`dispute`) are **not**
+here.
+
+### Raising one
+
+`createprop` takes the fee from a deposit balance `prop.worlds` keeps per
+account, not from the transaction — and `receive` credits *any* transfer to the
+contract regardless of memo. So raising a proposal from an account with no
+deposit is two actions in one transaction: the transfer, then `createprop`.
+
+Both preconditions are read before the form will submit:
+
+- the proposer must be in `recwl` for that scope (presence only — the receiver's
+  rating is not checked)
+- the arbiter must be in `arbwhitelist` with `rating > 0`, so only those are
+  offered
+
+The arbiter's pay must be above zero. That is not a contract rule — nothing
+checks it at creation — but `startwork` sends it to escrow as its own
+`transfer`, and a transfer of zero is rejected, so a proposal created with
+nothing for the arbiter can never start.
+
+The pay token is taken from the config's own `proposal_fee` rather than assumed
+to be TLM.
+
 ## The watchlist
 
 `WATCHED` in `app.js` is a hand-supplied set of accounts. Any custodian in it is

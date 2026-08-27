@@ -65,6 +65,12 @@
             </div>
         </header>
 
+        <!--
+          The tabs and the account's errands share a line but not a meaning. Sat
+          flush against the tab strip these two read as two more tabs, so they
+          are pushed to the far end of the row instead.
+        -->
+        <div class="tabrow">
         <div class="switch" role="tablist" aria-label="DAO type">
             <button class="switch-btn is-on" id="tabSyndicates" role="tab" aria-selected="true" type="button">
                 Syndicates <span class="count" id="countSyndicates"></span>
@@ -80,21 +86,24 @@
             </button>
         </div>
 
-        <!--
-          Only enabled once a vote row has been read for EVERY DAO in the group.
-          Re-casting a partial slate would silently drop the DAOs whose votes
-          could not be read, so a missing read has to disable it rather than
-          shrink it.
-        -->
-        <button class="btn btn-ghost refresh-votes" id="refreshVotesBtn" type="button" hidden></button>
+        <div class="tabrow-acts">
+            <!--
+              Only enabled once a vote row has been read for EVERY DAO in the
+              group. Re-casting a partial slate would silently drop the DAOs
+              whose votes could not be read, so a missing read has to disable it
+              rather than shrink it.
+            -->
+            <button class="btn btn-ghost refresh-votes" id="refreshVotesBtn" type="button" hidden></button>
 
-        <!--
-          Everything waiting on this account, gathered from every council it sits
-          on that the watched accounts also control. Beside the vote refresh
-          because both are account-scoped errands that span DAOs, rather than
-          anything to do with the tab you happen to be looking at.
-        -->
-        <button class="btn btn-ghost todo-btn" id="todoBtn" type="button" hidden>To do</button>
+            <!--
+              Everything waiting on this account, gathered from every council it
+              sits on that the watched accounts also control. Beside the vote
+              refresh because both are account-scoped errands that span DAOs,
+              rather than anything to do with the tab you happen to be looking at.
+            -->
+            <button class="btn btn-ghost todo-btn" id="todoBtn" type="button" hidden>To do</button>
+        </div>
+        </div>
 
         <main class="daos" id="daos" role="tabpanel"></main>
 
