@@ -1024,6 +1024,8 @@ function render() {
     // The panel reads the same `position` map the cards do, so anything that
     // re-renders one has to re-render the other.
     if (selectedId) renderPanel()
+
+    syncHash()
 }
 
 // ── Wallet ────────────────────────────────────────────────────────────────
@@ -2071,11 +2073,19 @@ async function loadDetails(dao) {
     }
 }
 
-async function openDetails(id) {
+const DETAILS_TABS = ['council', 'proposals', 'worker']
+
+async function openDetails(id, tab) {
     closeTodo()
     detailsId = id
     detailsKind = 'dao'
-    detailsTab = 'proposals'
+    // Proposals unless a restored view asks for another. A syndicate has no
+    // worker tab to land on, so that one falls back rather than opening a
+    // switch with nothing behind it.
+    detailsTab = DETAILS_TABS.includes(tab) &&
+        (tab !== 'worker' || hasWorkerProposals(daoById(id) ?? {}))
+        ? tab
+        : 'proposals'
     periodFormOpen = false
     wpForm = null
     wpFilter = 'live'
@@ -2098,6 +2108,7 @@ function closeDetails() {
     detailsId = null
     detailsEl.hidden = true
     document.body.classList.remove('is-details')
+    syncHash()
 }
 
 function seatRow(dao, c, seat) {
@@ -2158,6 +2169,7 @@ function renderDetails() {
     detailsEl.hidden = false
     document.body.classList.add('is-details')
     paintDetailsNote()
+    syncHash()
 }
 
 function buildDetails(dao) {
@@ -4208,6 +4220,7 @@ function closeCreate() {
     createForm = null
     createEl.hidden = true
     document.body.classList.remove('is-details')
+    syncHash()
 }
 
 // Reads the form back out of the DOM. The fields are uncontrolled — typing into
@@ -4247,6 +4260,7 @@ function renderCreate() {
     createEl.hidden = false
     document.body.classList.add('is-details')
     paintCreateNote()
+    syncHash()
 }
 
 function buildCreate() {
@@ -4517,6 +4531,7 @@ function closeTodo() {
     todoOpen = false
     todoEl.hidden = true
     document.body.classList.remove('is-details')
+    syncHash()
 }
 
 function renderTodo() {
@@ -4537,6 +4552,7 @@ function renderTodo() {
     todoEl.innerHTML = html
     todoEl.hidden = false
     document.body.classList.add('is-details')
+    syncHash()
     paintTodoNote()
 }
 
@@ -4788,16 +4804,112 @@ $('refreshBtn').addEventListener('click', refreshAll)
 $('refreshVotesBtn').addEventListener('click', refreshGroupVotes)
 $('todoBtn').addEventListener('click', openTodo)
 
-for (const [id, value] of [['tabSyndicates', 'syndicate'], ['tabUnions', 'union'], ['tabMsig', 'msig']]) {
-    $(id).addEventListener('click', () => {
-        group = value
-        for (const btn of document.querySelectorAll('.switch-btn')) {
-            const on = btn.id === id
-            btn.classList.toggle('is-on', on)
-            btn.setAttribute('aria-selected', String(on))
-        }
-        render()
-    })
+const GROUP_TABS = [['tabSyndicates', 'syndicate'], ['tabUnions', 'union'], ['tabMsig', 'msig']]
+
+function setGroup(value) {
+    const row = GROUP_TABS.find(([, v]) => v === value)
+    if (!row) return
+    group = value
+    for (const btn of document.querySelectorAll('.switch-btn')) {
+        const on = btn.id === row[0]
+        btn.classList.toggle('is-on', on)
+        btn.setAttribute('aria-selected', String(on))
+    }
+    render()
+}
+
+for (const [id, value] of GROUP_TABS) {
+    $(id).addEventListener('click', () => setGroup(value))
+}
+
+// ── The view, in the URL ──────────────────────────────────────────────────
+//
+// F5 used to land on the syndicate grid whatever you had been reading. Every
+// view here is just a position in state — which grid, which DAO, which of its
+// tabs — so that position is written into the hash and read back on load.
+//
+// replaceState rather than assigning to location.hash: assigning pushes a
+// history entry, and a details view opened and closed twice would then take four
+// presses of Back to leave the page.
+
+// Nothing is written while the restore is still being applied — the renders that
+// happen during loading would otherwise rewrite the hash to the grid before the
+// view it names has been opened.
+let restoringView = true
+
+const GROUP_SLUG = { syndicate: 'syndicates', union: 'unions', msig: 'msig' }
+const SLUG_GROUP = { syndicates: 'syndicate', unions: 'union', msig: 'msig' }
+
+// Read ONCE, at load, before the first render can overwrite it. Declared AFTER
+// the two maps: parseViewHash reads SLUG_GROUP, and a const is in its temporal
+// dead zone until its own line runs — calling the hoisted function any earlier
+// throws.
+const wantedView = parseViewHash(location.hash)
+
+function parseViewHash(raw) {
+    const parts = String(raw ?? '').replace(/^#/, '').split('/').filter(Boolean)
+        .map((p) => { try { return decodeURIComponent(p) } catch { return p } })
+    if (!parts.length) return null
+
+    const [head, second, third] = parts
+    if (head === 'todo') return { view: 'todo' }
+    if (head === 'create') return { view: 'create', id: second ?? null }
+
+    const group = SLUG_GROUP[head]
+    if (!group) return null
+    if (!second) return { view: 'grid', group }
+    // Which kind of thing the second segment names is decided by the grid it
+    // sits under: DAO ids live under the two council grids, allocator accounts
+    // under msig. Both are bare account-shaped names, so nothing about the text
+    // itself could tell them apart.
+    return group === 'msig'
+        ? { view: 'allocator', id: second }
+        : { view: 'dao', group, id: second, tab: third ?? null }
+}
+
+function viewHash() {
+    if (createOpen) return `#create${createForm?.daoId ? `/${createForm.daoId}` : ''}`
+    if (todoOpen) return '#todo'
+
+    // An overlay names its own grid rather than whichever one happens to be
+    // behind it — the tab can be switched while a details view is open, and a
+    // hash that recorded that would reopen the wrong kind of thing.
+    if (detailsId && detailsKind === 'allocator') return `#msig/${detailsId}`
+    if (detailsId) {
+        const slug = GROUP_SLUG[daoById(detailsId)?.group] ?? GROUP_SLUG[group] ?? 'syndicates'
+        return `#${slug}/${detailsId}/${detailsTab}`
+    }
+    return `#${GROUP_SLUG[group] ?? 'syndicates'}`
+}
+
+// A pure function of state, called from every render and every close — so no
+// caller has to remember to keep the URL in step with what it just did.
+function syncHash() {
+    if (restoringView) return
+    const next = viewHash()
+    if (location.hash !== next) history.replaceState(null, '', next)
+}
+
+// Everything that does not need a wallet. The to-do list does, so it waits for
+// the session restore and is applied separately.
+function applyView(w) {
+    if (!w) return
+    if (w.view === 'grid') return setGroup(w.group)
+
+    if (w.view === 'dao') {
+        setGroup(w.group)
+        if (daoById(w.id)) openDetails(w.id, w.tab)
+        return
+    }
+    if (w.view === 'allocator') {
+        setGroup('msig')
+        if (allocators.some((a) => a.allocator === w.id)) openAllocator(w.id)
+        return
+    }
+    // Restored empty: the form's contents are gone with the reload whatever we
+    // do, and landing back on the page you were on with blank fields is clearer
+    // than being thrown back to the grid having lost the page as well.
+    if (w.view === 'create') openCreate({ dao: daoById(w.id) ?? undefined })
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────
@@ -4821,10 +4933,23 @@ async function boot() {
     await targets
     await alloc
 
+    // Everything the hash can name except the to-do list is openable now.
+    applyView(wantedView)
+
     // The councils render as soon as they are read; if a session was restored
     // alongside them, the holdings land in a second pass rather than holding
     // the page back.
     await restoring
+
+    // The to-do list is built from the councils this account sits on, so it
+    // could not be opened until the session came back.
+    if (wantedView?.view === 'todo' && session) openTodo()
+
+    // From here the URL follows the view. Done after the restore so the renders
+    // above cannot overwrite the hash with the grid they drew on the way past.
+    restoringView = false
+    syncHash()
+
     await loadPosition()
 }
 

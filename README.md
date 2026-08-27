@@ -100,6 +100,51 @@ will not serve one scope of `alien.worlds` has said nothing about whether the
 council read worked, so a missing balance leaves the chip off one card instead of
 reporting the whole card unavailable.
 
+## The view survives a reload
+
+F5 used to land on the syndicate grid whatever you had been reading. Every view
+is a position in state — which grid, which DAO, which of its tabs — so that
+position is written into the URL hash and read back on load:
+
+| Hash | View |
+|---|---|
+| `#syndicates` / `#unions` / `#msig` | one of the three grids |
+| `#unions/neriunn/worker` | a DAO's details, on the tab that was showing |
+| `#msig/khaurex.dac` | a point allocator's details |
+| `#todo` | the to-do list |
+| `#create/neriunn` | the new-proposal form |
+
+Which kind of thing the second segment names is decided by the grid it sits
+under — DAO ids under the council grids, allocator accounts under `msig`. Both
+are bare account-shaped names, so nothing in the text itself could tell them
+apart. For the same reason an open overlay writes *its own* grid rather than
+whichever is behind it: the top tab can be switched while a details view is open,
+and a hash recording that would reopen the wrong kind of thing.
+
+`history.replaceState`, never assignment to `location.hash`. Assigning pushes a
+history entry, and a details view opened and closed twice would then take four
+presses of Back to leave the page. Switching every tab and opening and closing a
+details view adds **zero** entries.
+
+Restoring is applied in two passes, because the views become openable at
+different moments: the grids and both kinds of details once `loadDaos` and
+`loadAllocators` are in, the to-do list only after the session is restored, since
+it is built from the councils the connected account sits on. Writing is suppressed
+until both have run — the renders that happen during loading would otherwise
+overwrite the hash with the grid they drew on the way past.
+
+A hash that names something that is not there does not fail; it settles on the
+nearest view that exists, and rewrites itself to say so. `#unions/nosuchdao`
+lands on the unions grid, `#syndicates/eyeke/worker` opens Eyeke on its
+proposals tab (a syndicate has no worker tab), and anything unparseable falls
+through to `#syndicates`.
+
+Two things are deliberately not restored. **Sub-filters** — active/executed,
+live/all — start at their defaults rather than making the hash carry them. And a
+**create form's contents** are gone with the reload regardless; the page reopens
+with the council preselected and the fields blank, which is clearer than being
+thrown back to the grid having lost the page as well.
+
 ## Connecting a wallet
 
 Optional, and top-right. [WharfKit](https://wharfkit.com) with the Anchor and
