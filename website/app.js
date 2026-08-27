@@ -61,6 +61,24 @@ const TLM_SYMBOL   = 'TLM'
 const TREASURY  = 1
 const CUSTODIAN = 2
 
+// The two accounts a DAO can actually spend from. Which one it is differs by
+// group, and dacdirectory_shared.hpp says why in its own comments:
+//
+//   SPENDINGS         = 11  "Account to hold all the spending allowance for
+//                            the current period."             eyeke.dac
+//   PROP_FUNDS        = 12  proposal funds, deposits only     eyeke.wp.dac
+//   PROP_FUNDS_SOURCE = 13  "...to ensure that the union daos have spending
+//                            access but the syndicates only have deposit
+//                            access."                         eyeke.wp.dac
+//
+// 13 is registered on the unions and on nothing else; 11 is the syndicate's
+// own account. That is precisely why the spendable balance lives on
+// <planet>.wp.dac for a union and <planet>.dac for a syndicate. Preferring 13
+// and falling back to 11 puts that question to the directory instead of
+// assembling account names out of the DAO id.
+const SPENDINGS         = 11
+const PROP_FUNDS_SOURCE = 13
+
 // Accounts to watch, and how many seats on one council it takes before that
 // council is marked. Nothing on chain says these accounts are related — this is
 // a hand-supplied list, and the marker means "these accounts hold this many
@@ -389,6 +407,10 @@ async function loadDao(row) {
         precision: Number(precision) || 0,
         tokenContract: row.symbol?.contract ?? null,
         custodianContract: accounts[CUSTODIAN] ?? null,
+        // Where this DAO's own money sits, and the TLM in it. Not the DAO
+        // token — that is EYE, MAG and so on, and it is a different contract.
+        treasury: accounts[PROP_FUNDS_SOURCE] ?? accounts[SPENDINGS] ?? null,
+        tlm: null,
         council: [],       // the seated rows, in the order the chain seats them
         custodians: [],    // just their names, which is all a card needs
         error: null,
@@ -460,6 +482,21 @@ async function loadDao(row) {
     } catch (err) {
         dao.error = err.message ?? String(err)
     }
+
+    // Outside the council's try on purpose. A node that will not serve one
+    // scope of alien.worlds has said nothing about whether the council read
+    // succeeded, and reporting the card as unavailable over a missing balance
+    // would throw away the part that did work.
+    if (dao.treasury) {
+        try {
+            dao.tlm = (await getRows(TLM_CONTRACT, dao.treasury, 'accounts', { limit: 20 }))
+                .map((r) => r.balance)
+                .find((b) => assetCode(b) === TLM_SYMBOL) ?? null
+        } catch (err) {
+            console.error(`Could not read ${dao.treasury}'s TLM:`, err)
+        }
+    }
+
     return dao
 }
 
@@ -911,6 +948,17 @@ function daoHtml(dao) {
         ? `<span class="mc" title="${held} of ${dao.custodians.length} seats held by the watched accounts">MC controlled</span>`
         : ''
 
+    // What the DAO itself can spend. Whole tokens, like every other figure on a
+    // card; the exact asset and the account holding it are in the tooltip, so
+    // nothing is lost by trimming the four decimals off the face of it.
+    const purse = dao.tlm
+        ? `<span class="treasury" title="${esc(dao.tlm)} held by ${esc(dao.treasury)} — ${
+              dao.group === 'union'
+                  ? "the union's proposal funds, the account it has spending access to"
+                  : "the syndicate's spending allowance for the current period"
+          }">${esc(fmtAmount(dao.tlm))} <i>TLM</i></span>`
+        : ''
+
     // When your vote here was last cast. Sits with the id rather than in the
     // corner now that the election clock has the title line.
     const vote = votes.get(dao.id)
@@ -940,7 +988,7 @@ function daoHtml(dao) {
             <h2>${esc(dao.title)}</h2>
             ${clock}
         </div>
-        <p class="dao-id">${esc(dao.id)}${marker}${age}</p>
+        <p class="dao-id">${esc(dao.id)}${purse}${marker}${age}</p>
         <div class="dao-body">
             <ul class="council">${council}</ul>
             ${positionHtml(dao)}

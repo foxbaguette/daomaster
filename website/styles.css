@@ -328,6 +328,23 @@ html, body {
     cursor: help;
 }
 
+/* The DAO's own spendable TLM. Deliberately neither gold, blue nor green:
+   each of those already means one specific thing on a card - the election
+   clock, the watched accounts, an unstake ready to claim - and a fourth
+   borrower would blunt all three. */
+.treasury {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text);
+    background: var(--panel-in);
+    border: 1px solid var(--line);
+    padding: 1px 7px;
+    white-space: nowrap;
+    cursor: help;
+}
+
+.treasury i { font-style: normal; color: var(--text-faint); }
+
 /* Council on the left, holdings on the right. */
 .dao-body {
     display: flex;

@@ -65,6 +65,41 @@ treasury, refs, a seated council — so nothing in the data marks them as scratc
 They are hidden by the `HIDDEN` set in `app.js`, which is a curation choice and
 therefore a list of ids rather than a rule.
 
+## The DAO's own TLM
+
+Each card shows what the DAO itself can spend, and the two groups keep it in
+different places:
+
+| Group | Account type | Example | Balance read from |
+|---|---|---|---|
+| Syndicate | `SPENDINGS` (11) | `eyeke.dac` | `alien.worlds` / `accounts` |
+| Union | `PROP_FUNDS_SOURCE` (13) | `eyeke.wp.dac` | `alien.worlds` / `accounts` |
+
+Reading `accounts[13] ?? accounts[11]` is not a guess at which one to prefer —
+`dacdirectory_shared.hpp` says why the split exists, in its own comment on type
+13:
+
+> `PROP_FUNDS_SOURCE = 13` — Account to hold all the Proposal funds for
+> spending only. This is to ensure that the union daos have spending access but
+> the syndicates only have deposit access.
+
+So type 13 is registered on the six unions and on nothing else, while type 11 —
+"Account to hold all the spending allowance for the current period" — is the
+syndicate's own. Both groups also carry `PROP_FUNDS` (12), which is the same
+`*.wp.dac` account seen from the deposit side; a syndicate having a 12 is why
+type 12 cannot be used to tell the groups apart, and why it is not the one read
+here.
+
+This is TLM, not the DAO token. Every DAO runs on its own `token.worlds` symbol
+— `EYE`, `MAG`, `NERUNN` — and TLM sits beside that, on `alien.worlds`. Nothing
+is subtracted from the balance: DAO-token staking happens in `token.worlds` and
+does not touch it.
+
+The read has its own guard rather than sitting inside the council's. A node that
+will not serve one scope of `alien.worlds` has said nothing about whether the
+council read worked, so a missing balance leaves the chip off one card instead of
+reporting the whole card unavailable.
+
 ## Connecting a wallet
 
 Optional, and top-right. [WharfKit](https://wharfkit.com) with the Anchor and
