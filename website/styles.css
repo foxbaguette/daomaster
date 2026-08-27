@@ -1529,6 +1529,20 @@ body.is-details, body.is-modal { overflow: hidden; }
 
 .refresh-votes { margin: 0; }
 
+/* Some DAO in the group would not answer, so the batch cannot be complete. The
+   button still works - it signs the votes it CAN see, which beats signing none -
+   but it stops looking like the whole job is covered. Which DAOs, and what that
+   means, are on its tooltip. */
+.refresh-votes.is-partial {
+    border-color: rgba(255, 90, 110, .35);
+    color: var(--danger);
+}
+.refresh-votes.is-partial::after {
+    content: '!';
+    margin-left: 6px;
+    font-weight: 600;
+}
+
 /* ── Status / foot ───────────────────────────────────────────────────────── */
 
 .status {

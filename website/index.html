@@ -88,10 +88,13 @@
 
         <div class="tabrow-acts">
             <!--
-              Only enabled once a vote row has been read for EVERY DAO in the
-              group. Re-casting a partial slate would silently drop the DAOs
-              whose votes could not be read, so a missing read has to disable it
-              rather than shrink it.
+              Signs every vote this account holds in the group, and says on its
+              face how many that is. Holding votes in two DAOs out of six is an
+              ordinary way to use them, not a broken read - so the count shrinks
+              and the button keeps working.
+              A DAO that would not ANSWER is the one real gap, and that marks the
+              button rather than disabling it: signing the votes we can see beats
+              signing none, so long as nothing pretends the group was covered.
             -->
             <button class="btn btn-ghost refresh-votes" id="refreshVotesBtn" type="button" hidden></button>
 

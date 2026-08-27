@@ -399,10 +399,23 @@ scoped by dac_id. **Refreshing a vote is re-casting the same slate**: it rewrite
 `vote_time_stamp`, which feeds each candidate's `avg_vote_time_stamp` and so
 their `rank`. The candidate list does not change — only its age.
 
-The group button above the grid does that for a whole tab in one transaction. It
-is **only enabled when a vote row was read for every DAO in the group**: a
-partial slate would silently leave out the DAOs whose votes could not be read,
-so a failed read disables the button rather than shrinking it.
+The group button above the grid does that for a whole tab in one transaction,
+and it signs **every vote this account actually holds** there — its label is that
+count, so it is honest by construction and never claims to cover a DAO it is not
+touching.
+
+The distinction that makes this work is between a DAO with **no vote in it** and
+a DAO that **could not be read**. Both leave the id out of `votes`, so that map
+alone cannot tell them apart — which is why the successful reads are tracked
+separately in `voteReads`, including the ones that came back empty. An empty
+answer is an answer: it says this account has never voted there.
+
+Holding votes in two unions out of six is an ordinary way to use these DAOs, and
+the button works for it. A DAO that would not answer is the one real gap, since
+only there is it unknown whether a vote was left behind — that marks the button
+and names the DAO on its tooltip, but does not disable it. Signing the votes we
+can see beats signing none, as long as nothing pretends the group was covered;
+the status line after the transaction repeats what was left out.
 
 `maxvotes` is 2, enforced in the UI as well as the contract — better than a
 wallet prompt for a transaction that cannot succeed.

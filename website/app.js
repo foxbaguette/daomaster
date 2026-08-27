@@ -128,6 +128,13 @@ let session = null
 let position = new Map()   // dac_id -> what the signed-in account holds there
 let votes = new Map()      // dac_id -> the signed-in account's `votes` row, if any
 
+// Which DAOs answered the vote read at all — including the ones that answered
+// "no row". Never voting in a DAO and being unable to ask it are completely
+// different facts, and `votes` alone cannot tell them apart: both leave the id
+// absent. Keeping the successful reads separately is what lets a partial slate
+// be recognised as deliberate rather than broken.
+let voteReads = new Set()  // dac_id, for every vote read that came back
+
 const $ = (id) => document.getElementById(id)
 const daosEl    = $('daos')
 const statusEl  = $('status')
@@ -720,6 +727,7 @@ async function loadPosition() {
     if (!session || !daos.length) {
         position = new Map()
         votes = new Map()
+        voteReads = new Set()
         setTlm(null)
         render()
         return
@@ -729,6 +737,7 @@ async function loadPosition() {
     const bounded = { lower_bound: actor, upper_bound: actor, limit: 1 }
     const next = new Map()
     const nextVotes = new Map()
+    const nextVoteReads = new Set()
 
     // One balances read per token contract, one for TLM, then three per DAO. Any
     // stakeconfig follow-ups land on top of this, which the bar clamps rather
@@ -771,10 +780,13 @@ async function loadPosition() {
                 try {
                     const [row] = await getRows(dao.custodianContract, dao.id, 'votes', bounded)
                     if (row) nextVotes.set(dao.id, row)
+                    // Recorded even with no row. An empty answer is an answer:
+                    // it says this account has never voted here, which is a
+                    // DAO to skip rather than one to worry about.
+                    nextVoteReads.add(dao.id)
                 } catch (err) {
-                    // Leaving this DAO out of the map is what disables the
-                    // refresh-all button, which is the intended behaviour: it
-                    // must never fire a partial slate.
+                    // Left out of BOTH, so the refresh button can tell this
+                    // apart from a DAO that simply holds no vote.
                     console.error(`Could not read your vote in ${dao.id}:`, err)
                 }
             }
@@ -834,6 +846,7 @@ async function loadPosition() {
 
         position = next
         votes = nextVotes
+        voteReads = nextVoteReads
         setStatus(null)
     } catch (err) {
         console.error('Could not read your position:', err)
@@ -841,6 +854,7 @@ async function loadPosition() {
         setStatus('Could not read your holdings — reload to retry', 'error')
         position = new Map()
         votes = new Map()
+        voteReads = new Set()
     } finally {
         endPhase()
     }
@@ -1414,13 +1428,18 @@ function voteAction(dao, candidates) {
     }
 }
 
-// The whole group in one transaction, or not at all. `eligible` is every DAO in
-// the group that has a vote row AND candidates in it; the button is only offered
-// when that set covers the group completely.
+// One transaction covering every vote this account actually holds in the group.
+//
+// `eligible` is the DAOs with a vote row and candidates in it — the ones there is
+// something to re-cast in. `missing` is the DAOs whose vote could not be READ,
+// which is a different thing entirely from a DAO with no vote in it: voting in
+// two unions out of six is an ordinary way to use these DAOs, and the button has
+// to work for it. Only an unread DAO is a gap, because only there is it unknown
+// whether a vote was left behind.
 function groupVoteState() {
     const inGroup = daos.filter((d) => d.group === group)
     const eligible = inGroup.filter((d) => (votes.get(d.id)?.candidates ?? []).length > 0)
-    const missing = inGroup.filter((d) => !votes.has(d.id))
+    const missing = inGroup.filter((d) => !voteReads.has(d.id))
     return { inGroup, eligible, missing, complete: inGroup.length > 0 && missing.length === 0 }
 }
 
@@ -1465,25 +1484,32 @@ function refreshVotesChrome() {
         btn.hidden = true
         return
     }
-    const { inGroup, eligible, missing, complete } = groupVoteState()
+    const { eligible, missing, complete } = groupVoteState()
     const label = group === 'syndicate' ? 'syndicates' : 'unions'
+    const one = eligible.length === 1
 
+    // The count is what the button will sign, so the label is honest by
+    // construction — it never claims to cover DAOs it is not touching.
     btn.hidden = false
-    btn.disabled = busy || !complete || eligible.length === 0
-    btn.textContent = complete
-        ? `Refresh votes · ${eligible.length} ${label}`
-        : `Refresh votes · ${inGroup.length - missing.length}/${inGroup.length} read`
-    btn.title = complete
-        ? (eligible.length
-            ? `Re-cast your existing slate in ${eligible.map((d) => d.title).join(', ')}`
-            : `No votes cast in any ${label} yet`)
-        : `Votes could not be read for ${missing.map((d) => d.id).join(', ')} — ` +
-          `refreshing part of the group would leave those behind`
+    btn.disabled = busy || eligible.length === 0
+    btn.classList.toggle('is-partial', !complete && eligible.length > 0)
+    btn.textContent = `Refresh votes · ${eligible.length} ${one ? label.slice(0, -1) : label}`
+
+    const gap = complete ? '' :
+        ` ${missing.length} of these ${label} could not be read (${
+            missing.map((d) => d.id).join(', ')}), so if you hold a vote there it is not in this batch.`
+
+    btn.title = eligible.length
+        ? `Re-cast your existing slate in ${eligible.map((d) => d.title).join(', ')}.${gap}`
+        : complete
+            ? `No votes cast in any ${label} yet`
+            : `No vote could be read in any of these ${label} — ${
+                  missing.map((d) => d.id).join(', ')}`
 }
 
 async function refreshGroupVotes() {
-    const { eligible, complete } = groupVoteState()
-    if (!session || busy || !complete || !eligible.length) return
+    const { eligible, missing } = groupVoteState()
+    if (!session || busy || !eligible.length) return
 
     const actions = eligible.map((d) => voteAction(d, votes.get(d.id).candidates))
     busy = true
@@ -1494,7 +1520,11 @@ async function refreshGroupVotes() {
         await session.transact({ actions }, { broadcast: true })
         await sleep(2500)
         await loadPosition()
-        setStatus(`Refreshed votes in ${eligible.length} DAOs.`)
+        setStatus(`Refreshed votes in ${eligible.length} DAO${eligible.length === 1 ? '' : 's'}.${
+            missing.length
+                ? ` ${missing.map((d) => d.id).join(', ')} could not be read and ${
+                      missing.length === 1 ? 'was' : 'were'} left out.`
+                : ''}`, missing.length ? 'error' : '')
     } catch (err) {
         if (isUserCancel(err)) setStatus('Vote refresh cancelled.')
         else {
