@@ -498,6 +498,29 @@ A button whose preconditions are not met is still shown, disabled, with the
 reason on its tooltip: a worker needs to be told it is one approval short, not
 left guessing.
 
+#### Voting needs a second authorization
+
+`voteprop` and `votepropfin` are signed with **two** permission levels, not one:
+
+```
+["1x1ci.wam@active", "nar.unn.dac@one"]
+```
+
+The DAO's own account at its `one` permission, alongside the custodian's active.
+Every voteprop and votepropfin in chain history carries both, and without the
+second one the contract refuses for missing that permission. None of the other
+five actions want it — history confirms each of those is the actor's `@active`
+alone.
+
+**It is not a second signer.** `one` is threshold 1 with each seated custodian's
+`@active` at weight 1 (`dao.worlds` maintains it from the election), so the
+custodian's own key satisfies it. Adding the level is the DAO saying "a custodian
+asked for this"; the wallet still signs once.
+
+Nothing in the published `dacproposals` source accounts for this — master's
+`_voteprop` does `require_auth(custodian)` and nothing else, so the deployed
+build is not that source. The chain is what this follows.
+
 `arbagree` is included because `startwork` refuses without it, which makes the
 arbiter's agreement a stage rather than a detail. Five of the 86 proposals on
 chain have never had it.

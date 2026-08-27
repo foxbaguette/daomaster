@@ -3445,18 +3445,40 @@ async function wpAct(dao, act, id) {
     const one = (name, data) => [{ account: WP_CONTRACT, name, authorization: auth(), data }]
     const after = () => refreshWorker(dao)
 
+    // The two vote actions want a SECOND authorization: the DAO's own account at
+    // its `one` permission, alongside the custodian's active. Every voteprop and
+    // votepropfin on chain carries both — ["1x1ci.wam@active","nar.unn.dac@one"]
+    // — and without it the contract refuses for missing that permission.
+    //
+    // No extra signature is involved. `one` is threshold 1 with every seated
+    // custodian's @active at weight 1, so the custodian's own key satisfies it;
+    // it is the DAO saying "a custodian asked for this", not a second signer.
+    //
+    // Nothing in the published dacproposals source explains it: master's
+    // _voteprop does require_auth(custodian) and nothing more, so the deployed
+    // build is not that source. The chain is what this follows.
+    //
+    // The other five actions take the actor's active alone, which chain history
+    // confirms for every one of them.
+    const voting = (name, data) => [{
+        account: WP_CONTRACT, name, data,
+        authorization: dao.owner
+            ? [...auth(), { actor: dao.owner, permission: 'one' }]
+            : auth(),
+    }]
+
     switch (act) {
     case 'approve':
-        return submitDetails(one('voteprop', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
+        return submitDetails(voting('voteprop', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
             `Approve "${p.title}"`, after)
     case 'deny':
-        return submitDetails(one('voteprop', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
+        return submitDetails(voting('voteprop', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
             `Vote against "${p.title}"`, after)
     case 'finapprove':
-        return submitDetails(one('votepropfin', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
+        return submitDetails(voting('votepropfin', { custodian: me, proposal_id: id, vote: 'approve', dac_id }),
             `Accept the work on "${p.title}"`, after)
     case 'findeny':
-        return submitDetails(one('votepropfin', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
+        return submitDetails(voting('votepropfin', { custodian: me, proposal_id: id, vote: 'deny', dac_id }),
             `Reject the work on "${p.title}"`, after)
     case 'arbagree':
         return submitDetails(one('arbagree', { arbiter: me, proposal_id: id, dac_id }),
