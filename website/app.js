@@ -3128,12 +3128,20 @@ function wpRowActions(dao, p, wp, tally) {
                     : null))
     }
 
-    return out.length ? `<div class="wp-acts">${out.join('')}</div>` : ''
+    return out.join('')
 }
 
 function wpRow(dao, p, wp) {
     const tally = wpTally(dao, p, wp)
     const doc = wpDocUrl(p.content_hash)
+
+    // Shown for a plain URL as well as an IPFS CID: both are what a worker
+    // attached as the proposal document, and `content_hash` holds either. A
+    // proposal with nothing attached simply has no button.
+    const docBtn = doc
+        ? `<a class="act-mini wp-do is-live wp-doc-btn" href="${esc(doc)}"
+              target="_blank" rel="noopener">view document</a>`
+        : ''
     const created = wpTime(p.created_at)
     const state = wpEffectiveState(p)
 
@@ -3152,9 +3160,7 @@ function wpRow(dao, p, wp) {
     <tr>
         ${wpBadge(p, tally)}
         <td>
-            <b class="row-title">${doc
-                ? `<a href="${esc(doc)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
-                : esc(p.title)}</b>
+            <b class="row-title">${esc(p.title)}</b>
             <span class="row-meta">
                 <span class="who" title="The worker — who raised this and who gets paid">${esc(p.proposer)}</span>
                 ${WATCHED.has(p.proposer)
@@ -3181,7 +3187,10 @@ function wpRow(dao, p, wp) {
             ${esc(when)}
             <span class="d-dim" title="How long the work is expected to take. The escrow locks for twice it.">${
                 esc(fmtDays(p.job_duration))} job</span>
-            ${wpRowActions(dao, p, wp, tally)}
+            ${(() => {
+                const acts = docBtn + wpRowActions(dao, p, wp, tally)
+                return acts ? `<div class="wp-acts">${acts}</div>` : ''
+            })()}
         </td>
     </tr>`
 }
@@ -3403,20 +3412,12 @@ function buildWorkerBlock(dao) {
     }
 
     const shown = wpFilter === 'live' ? wp.props.filter(wpIsLive) : wp.props
-    const live = wp.props.filter(wpIsLive).length
-    const c = wp.config
 
     return `
     <section class="d-block">
         <h3>Worker proposals
             <span class="d-dim">${shown.length} of ${wp.props.length}</span>
         </h3>
-
-        <p class="act-blurb">Jobs offered to this union: the council votes to approve the work,
-            the worker does it, and the council votes again before the escrow pays out.
-            <b>${c.proposal_threshold}</b> approvals let work start and <b>${c.finalize_threshold}</b>
-            release the money, a proposal has ${esc(fmtDays(c.approval_duration))} to collect the first set,
-            and none can be paid until ${esc(fmtDays(c.min_proposal_duration))} after it was raised.</p>
 
         ${wpForm ? wpFormHtml(dao, wp) : `
             <button class="card-btn" id="wpOpen" type="button">Raise a worker proposal</button>`}

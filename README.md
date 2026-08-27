@@ -597,6 +597,11 @@ to be TLM.
 
 ### The document, and uploading one
 
+Each row carries a **view document** button when  holds something
+openable. That is either kind: an IPFS CID goes through the gateway below, and a
+plain URL — which several proposals on chain use instead — opens as it stands.
+A proposal with nothing attached has no button.
+
 `content_hash` is a free string. Both an IPFS CID and a plain URL appear on chain
 today, so the list makes either clickable — a CID through Alien Worlds' own
 gateway, which is where [wps.alienops.io](https://wps.alienops.io) links every

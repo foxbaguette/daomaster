@@ -1698,5 +1698,17 @@ body.is-details, body.is-modal { overflow: hidden; }
 }
 .wp-upload:hover:not(:disabled) { color: var(--gold-hot); background: rgba(242, 183, 60, .19); }
 
+/* An anchor, not a button - it opens the document in a new tab, and a real link
+   is what lets middle-click and copy-address work. It inherits .act-mini's mono
+   face, which is what the buttons beside it use, and only needs telling to sit at
+   their height and to shed the underline and colour .d-table a gives every link
+   inside a table. Both of those need the extra specificity to beat it. */
+.wp-doc-btn {
+    display: inline-flex;
+    align-items: center;
+}
+.d-table a.wp-doc-btn { color: var(--gold); text-decoration: none; }
+.d-table a.wp-doc-btn:hover { color: var(--gold-hot); }
+
 .wp-form .cp-field { margin-top: 12px; }
 .wp-form .cp-grid { align-items: end; }
