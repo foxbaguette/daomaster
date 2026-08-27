@@ -597,19 +597,21 @@ to be TLM.
 
 ### The document, and uploading one
 
-Each row carries a **view document** button when  holds something
-openable. That is either kind: an IPFS CID goes through the gateway below, and a
-plain URL — which several proposals on chain use instead — opens as it stands.
-A proposal with nothing attached has no button.
-
-`content_hash` is a free string. Both an IPFS CID and a plain URL appear on chain
-today, so the list makes either clickable — a CID through Alien Worlds' own
-gateway, which is where [wps.alienops.io](https://wps.alienops.io) links every
-document:
+`content_hash` is a free string, and both an IPFS CID and a plain URL appear on
+chain today. Each row carries a **view document** button whenever it holds either
+— a CID through Alien Worlds' own gateway, which is where
+[wps.alienops.io](https://wps.alienops.io) links every document, and a URL as it
+stands. A proposal with nothing attached has no button.
 
 ```
 https://ipfs.alienworlds.io/ipfs/<cid>
 ```
+
+The button is an anchor rather than a `<button>`, so middle-click and
+copy-address work — which means it needs extra specificity to shed the colour and
+underline `.d-table a` gives every link inside a table. It inherits
+`.act-mini`'s mono face on purpose: that is what the action buttons beside it
+use.
 
 The **Upload** button beside the field pins a file and fills the field with its
 CID, against the same endpoint the WPS client uses:
