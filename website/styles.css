@@ -1527,6 +1527,16 @@ body.is-details, body.is-modal { overflow: hidden; }
     cursor: help;
 }
 
+/* A candidate on the slate who has withdrawn. The row exists ONLY so the box
+   can be unticked - the active list does not contain them, and without a row
+   there was no way to take them back off. */
+.d-table tr.is-gone td { opacity: .75; }
+.d-table tr.is-gone a { text-decoration: line-through; }
+
+/* Same warning on the card's refresh button: its slate holds a name the chain
+   will refuse, and the tooltip says which. */
+.card-btn.is-stale { color: var(--danger); border-color: rgba(255, 90, 110, .35); }
+
 .refresh-votes { margin: 0; }
 
 /* Some DAO in the group would not answer, so the batch cannot be complete. The

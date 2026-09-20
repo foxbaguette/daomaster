@@ -435,15 +435,17 @@ async function loadDao(row) {
         const node = await acquireNode(3).catch(() => null)
         const opts = node ? { url: node.url } : {}
 
-        const [seated, ranked, globals] = await Promise.all([
+        const [seated, allCands, globals] = await Promise.all([
             getRows(dao.custodianContract, dao.id, 'custodians1', { limit: 100, ...opts }),
-            // `bydecayed` is the fifth secondary index — index_position 6. It
-            // sorts on `UINT64_MAX - rank`, so ascending on it IS descending by
-            // rank, which is exactly the order newperiod walks. One page only:
-            // the whole candidates table runs to hundreds of mostly-dead rows.
-            postRows(dao.custodianContract, dao.id, 'candidates', {
-                index_position: 6, key_type: 'i64', limit: 40, ...opts,
-            }),
+            // The whole table rather than a page of the `bydecayed` index. It is
+            // one call either way — 85 rows at its largest, every scope answering
+            // `more: false` — and having the inactive rows too is what lets a vote
+            // that can no longer be cast be recognised instead of guessed at.
+            //
+            // Ordering is not lost by doing it here: `bydecayed` is literally
+            // `UINT64_MAX - rank` over a stored `rank` field, so sorting by rank
+            // descending below reproduces exactly the order newperiod walks.
+            getRows(dao.custodianContract, dao.id, 'candidates', { limit: 500, ...opts }),
             // Carries `lastperiodtime` and `periodlength`, which together are the
             // only statement of when the next election is due.
             postRows(dao.custodianContract, dao.id, 'dacglobals', { limit: 1, ...opts }),
@@ -472,6 +474,17 @@ async function loadDao(row) {
         // use.
         dao.council = seated.sort((a, b) => Number(b.rank) - Number(a.rank))
         dao.custodians = dao.council.map((c) => c.cust_name)
+
+        // Every candidate row by name, active flag and all. This is what
+        // `votecust` consults, so it is what decides whether a vote already cast
+        // can still be re-cast.
+        dao.candidates = new Map(allCands.map((c) => [c.candidate_name, !!Number(c.is_active)]))
+
+        // The details view wants these same rows in full. It used to fetch them
+        // again on open; now that the grid load already has them, it does not.
+        candidatesCache.set(dao.id, allCands)
+
+        const ranked = [...allCands].sort((a, b) => Number(b.rank) - Number(a.rank))
 
         // newperiod walks the ranked index, skips inactive candidates, requires
         // vote power above zero, and stops at `numelected`. `custodians1` holds
@@ -983,6 +996,22 @@ function daoHtml(dao) {
               esc(fmtAge(Date.now() - voted))} ago</span>`
         : ''
 
+    // Refreshing one DAO's vote on its own. Withdrawn candidates come off the
+    // slate first, exactly as the group button does — and a slate with nothing
+    // left is offered disabled rather than hidden, because "your vote here is
+    // broken" is worth saying out loud.
+    const cast = session && votes.get(dao.id)?.candidates?.length ? castableSlate(dao) : null
+    const voteBtn = !cast ? '' : `
+        <button class="card-btn${cast.drop.length ? ' is-stale' : ''}"
+                data-revote="${esc(dao.id)}" type="button"
+                ${busy || !cast.keep.length ? 'disabled' : ''}
+                title="${esc(cast.drop.length
+                    ? `${cast.drop.map((d) => `${d.name} ${d.why}`).join(', ')}. ${cast.keep.length
+                        ? `Re-casts ${cast.keep.join(', ')} alone.`
+                        : 'Nothing left to re-cast — pick someone new in the details view.'}`
+                    : `Re-cast ${cast.keep.join(', ')} to reset this vote's age`)}">
+            Refresh vote${cast.drop.length ? ' !' : ''}</button>`
+
     // The clock is painted once here and then only its text is rewritten, once a
     // second, by tickCountdowns.
     const due = dao.nextElection
@@ -1009,6 +1038,7 @@ function daoHtml(dao) {
         </div>
         <div class="dao-btns">
             <button class="card-btn" data-details="${esc(dao.id)}" type="button">Details</button>
+            ${voteBtn}
             <button class="card-btn is-primary" data-actions="${esc(dao.id)}" type="button">Actions</button>
         </div>
     </article>`
@@ -1428,6 +1458,41 @@ function voteAction(dao, candidates) {
     }
 }
 
+// Why `votecust` would refuse this name, or null if it would take it.
+//
+// The contract checks three things about every name in `newvotes`: that it is a
+// registered member on the latest terms, that a candidate row exists, and that
+// the row is active. The last two are answered here from `dao.candidates`. The
+// membership check is not — it is about the CANDIDATE's own terms agreement, not
+// the voter's, and pre-reading it for every candidate of every DAO would cost
+// more than it saves. That one surfaces as the chain's own error instead.
+//
+// Note the asymmetry that makes any of this survivable: only `newvotes` is
+// validated. The vote being replaced is walked with `find()` and missing rows
+// are skipped, so a slate holding a dead candidate can always be REPLACED — it
+// just cannot be re-cast unchanged.
+function voteBlocker(dao, name) {
+    if (!dao.candidates) return null          // not read; do not invent a verdict
+    if (!dao.candidates.has(name)) return 'no longer a registered candidate'
+    if (!dao.candidates.get(name)) return 'has withdrawn and is no longer standing'
+    return null
+}
+
+// The slate as it could be cast today, and what had to come off it. A candidate
+// who has withdrawn takes the whole transaction down with them, which is how one
+// dead name broke a refresh across every DAO at once.
+function castableSlate(dao) {
+    const slate = votes.get(dao.id)?.candidates ?? []
+    const keep = []
+    const drop = []
+    for (const name of slate) {
+        const why = voteBlocker(dao, name)
+        if (why) drop.push({ name, why })
+        else keep.push(name)
+    }
+    return { slate, keep, drop }
+}
+
 // One transaction covering every vote this account actually holds in the group.
 //
 // `eligible` is the DAOs with a vote row and candidates in it — the ones there is
@@ -1438,9 +1503,27 @@ function voteAction(dao, candidates) {
 // whether a vote was left behind.
 function groupVoteState() {
     const inGroup = daos.filter((d) => d.group === group)
-    const eligible = inGroup.filter((d) => (votes.get(d.id)?.candidates ?? []).length > 0)
     const missing = inGroup.filter((d) => !voteReads.has(d.id))
-    return { inGroup, eligible, missing, complete: inGroup.length > 0 && missing.length === 0 }
+
+    // A slate is only re-castable as far as its candidates still stand. Names
+    // that have withdrawn come off it — they would refuse the whole transaction,
+    // and they are not being voted for in any real sense either, since the
+    // contract stopped counting them the moment they went inactive.
+    const held = inGroup
+        .filter((d) => (votes.get(d.id)?.candidates ?? []).length > 0)
+        .map((d) => ({ dao: d, ...castableSlate(d) }))
+
+    // Kept separate because these are not a refresh. Re-casting an empty slate
+    // is how `votecust` DELETES a vote, so a DAO whose every candidate has gone
+    // has to be decided on, never swept along with the batch.
+    const emptied = held.filter((h) => h.keep.length === 0)
+    const eligible = held.filter((h) => h.keep.length > 0)
+    const trimmed = eligible.filter((h) => h.drop.length > 0)
+
+    return {
+        inGroup, missing, eligible, trimmed, emptied,
+        complete: inGroup.length > 0 && missing.length === 0,
+    }
 }
 
 function todoChrome() {
@@ -1484,7 +1567,7 @@ function refreshVotesChrome() {
         btn.hidden = true
         return
     }
-    const { eligible, missing, complete } = groupVoteState()
+    const { eligible, missing, complete, trimmed, emptied } = groupVoteState()
     const label = group === 'syndicate' ? 'syndicates' : 'unions'
     const one = eligible.length === 1
 
@@ -1492,26 +1575,41 @@ function refreshVotesChrome() {
     // construction — it never claims to cover DAOs it is not touching.
     btn.hidden = false
     btn.disabled = busy || eligible.length === 0
-    btn.classList.toggle('is-partial', !complete && eligible.length > 0)
+    btn.classList.toggle('is-partial',
+        eligible.length > 0 && (!complete || trimmed.length > 0 || emptied.length > 0))
     btn.textContent = `Refresh votes · ${eligible.length} ${one ? label.slice(0, -1) : label}`
 
-    const gap = complete ? '' :
-        ` ${missing.length} of these ${label} could not be read (${
-            missing.map((d) => d.id).join(', ')}), so if you hold a vote there it is not in this batch.`
+    const notes = []
+    if (!complete) {
+        notes.push(`${missing.length} of these ${label} could not be read (${
+            missing.map((d) => d.id).join(', ')}), so a vote held there is not in this batch.`)
+    }
+    for (const h of trimmed) {
+        notes.push(`In ${h.dao.title} this drops ${h.drop.map((d) => d.name).join(' and ')} — ${
+            h.drop[0].why} — and re-casts ${h.keep.join(', ')}.`)
+    }
+    for (const h of emptied) {
+        notes.push(`${h.dao.title} is left out: every candidate you voted for there (${
+            h.slate.join(', ')}) has gone. ` +
+            `Re-casting an empty slate is how votecust DELETES a vote, so this one needs a ` +
+            `new pick in its details view, not a refresh.`)
+    }
 
     btn.title = eligible.length
-        ? `Re-cast your existing slate in ${eligible.map((d) => d.title).join(', ')}.${gap}`
-        : complete
-            ? `No votes cast in any ${label} yet`
-            : `No vote could be read in any of these ${label} — ${
-                  missing.map((d) => d.id).join(', ')}`
+        ? [`Re-cast your slate in ${eligible.map((h) => h.dao.title).join(', ')}.`, ...notes].join(' ')
+        : emptied.length
+            ? notes.join(' ')
+            : complete
+                ? `No votes cast in any ${label} yet`
+                : `No vote could be read in any of these ${label} — ${
+                      missing.map((d) => d.id).join(', ')}`
 }
 
 async function refreshGroupVotes() {
-    const { eligible, missing } = groupVoteState()
+    const { eligible, missing, trimmed, emptied } = groupVoteState()
     if (!session || busy || !eligible.length) return
 
-    const actions = eligible.map((d) => voteAction(d, votes.get(d.id).candidates))
+    const actions = eligible.map((h) => voteAction(h.dao, h.keep))
     busy = true
     refreshVotesChrome()
     setStatus(`Refreshing ${eligible.length} votes — check your wallet…`)
@@ -1520,11 +1618,16 @@ async function refreshGroupVotes() {
         await session.transact({ actions }, { broadcast: true })
         await sleep(2500)
         await loadPosition()
-        setStatus(`Refreshed votes in ${eligible.length} DAO${eligible.length === 1 ? '' : 's'}.${
-            missing.length
-                ? ` ${missing.map((d) => d.id).join(', ')} could not be read and ${
-                      missing.length === 1 ? 'was' : 'were'} left out.`
-                : ''}`, missing.length ? 'error' : '')
+        const left = [
+            ...missing.map((d) => `${d.id} could not be read`),
+            ...emptied.map((h) => `${h.dao.id} has no candidate left standing`),
+        ]
+        const cut = trimmed.flatMap((h) => h.drop.map((d) => `${d.name} in ${h.dao.id}`))
+        setStatus([
+            `Refreshed votes in ${eligible.length} DAO${eligible.length === 1 ? '' : 's'}.`,
+            cut.length ? `Dropped ${cut.join(', ')} — no longer standing.` : '',
+            left.length ? `Left out: ${left.join('; ')}.` : '',
+        ].filter(Boolean).join(' '), left.length ? 'error' : '')
     } catch (err) {
         if (isUserCancel(err)) setStatus('Vote refresh cancelled.')
         else {
@@ -2213,6 +2316,7 @@ function buildDetails(dao) {
     const props = proposalsCache.get(dao.id)
 
     // ── your vote
+    const cast = castableSlate(dao)
     const voteBlock = !session ? '' : `
         <section class="d-block">
             <h3>Your vote</h3>
@@ -2222,7 +2326,17 @@ function buildDetails(dao) {
                     <span class="d-dim">· cast ${esc(fmtAge(Date.now() - votedAt))} ago
                         (${isoDay(votedAt)})</span>
                 </p>
-                <button class="act-go" id="reVote" type="button" ${busy ? 'disabled' : ''}>Refresh this vote</button>
+                ${cast.drop.length ? `<p class="panel-note is-error">${
+                    cast.drop.map((d) => `<b>${esc(d.name)}</b> ${esc(d.why)}`).join(', ')}.
+                    ${cast.keep.length
+                        ? `Refreshing re-casts ${cast.keep.map((n) => esc(n)).join(', ')} alone.`
+                        : 'Nothing is left to re-cast — an empty slate would delete the vote ' +
+                          'rather than refresh it, so pick someone new below.'}</p>` : ''}
+                <button class="act-go" id="reVote" type="button"
+                    ${busy || !cast.keep.length ? 'disabled' : ''}>${
+                    cast.drop.length && cast.keep.length
+                        ? `Refresh without ${esc(cast.drop.map((d) => d.name).join(', '))}`
+                        : 'Refresh this vote'}</button>
             ` : `<p class="d-line d-dim">No vote cast in this DAO.</p>`}
         </section>`
 
@@ -2230,6 +2344,12 @@ function buildDetails(dao) {
     const standing = (cands ?? [])
         .filter((c) => c.is_active)
         .sort((a, b) => Number(b.rank) - Number(a.rank))
+
+    // The slate holds these, the active list does not, so they are drawn in
+    // front of it — ticked, marked, and above all untickable.
+    const staleRows = !session ? [] : [...pickedCandidates]
+        .map((name) => ({ name, why: voteBlocker(dao, name) }))
+        .filter((r) => r.why)
 
     const candBlock = `
         <section class="d-block">
@@ -2247,6 +2367,14 @@ function buildDetails(dao) {
                     <th class="num">Voters</th><th class="num">Vote age</th><th class="num">Seat</th>
                 </tr></thead>
                 <tbody>
+                ${staleRows.map((r) => `<tr class="is-picked is-gone">
+                    ${session ? `<td><input type="checkbox" data-cand="${esc(r.name)}" checked></td>` : ''}
+                    <td><a href="${EXPLORER}${encodeURIComponent(r.name)}"
+                           target="_blank" rel="noopener">${esc(r.name)}</a>
+                        <span class="risk" title="You voted for this account and votecust will now refuse the whole slate because of it — untick it and cast again">${
+                            esc(r.why)}</span></td>
+                    <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num"></td>
+                </tr>`).join('')}
                 ${standing.map((c) => {
                     const seat = dao.custodians.indexOf(c.candidate_name)
                     const age = Date.parse(`${c.avg_vote_time_stamp}Z`)
@@ -2265,14 +2393,19 @@ function buildDetails(dao) {
                         <td class="num">${Number.isFinite(age) ? esc(fmtAge(Date.now() - age)) : '—'}</td>
                         <td class="num">${seat >= 0 ? seat + 1 : ''}</td>
                     </tr>`
-                }).join('') || `<tr><td colspan="6" class="d-dim">${
-                    cands === null ? 'Could not read candidates.' : 'None standing.'}</td></tr>`}
+                }).join('') || (staleRows.length ? '' : `<tr><td colspan="6" class="d-dim">${
+                    cands === null ? 'Could not read candidates.' : 'None standing.'}</td></tr>`)}
                 </tbody>
             </table>
             </div>
-            ${session ? `<button class="act-go" id="castVote" type="button"
-                ${busy || pickedCandidates.size === 0 ? 'disabled' : ''}>
-                Cast vote${pickedCandidates.size ? ` for ${pickedCandidates.size}` : ''}</button>` : ''}
+            ${!session ? '' : `
+                ${staleRows.length ? `<p class="panel-note is-error">${
+                    staleRows.map((r) => `<b>${esc(r.name)}</b> ${esc(r.why)}`).join(', ')}.
+                    Until that is unticked, every cast from here is refused — the contract checks
+                    each name on the new slate before it will take any of it.</p>` : ''}
+                <button class="act-go" id="castVote" type="button"
+                    ${busy || pickedCandidates.size === 0 || staleRows.length ? 'disabled' : ''}>
+                    Cast vote${pickedCandidates.size ? ` for ${pickedCandidates.size}` : ''}</button>`}
         </section>`
 
     // ── proposals
@@ -2590,9 +2723,10 @@ detailsEl.addEventListener('click', async (e) => {
     }
 
     if (e.target.closest('#reVote')) {
-        const v = votes.get(dao.id)
-        if (!v?.candidates?.length) return
-        return submitDetails([voteAction(dao, v.candidates)], 'Refresh vote')
+        const { keep, drop } = castableSlate(dao)
+        if (!keep.length) return
+        return submitDetails([voteAction(dao, keep)],
+            drop.length ? `Refresh vote without ${drop.map((d) => d.name).join(', ')}` : 'Refresh vote')
     }
 
     if (e.target.closest('#castVote')) {
@@ -4794,8 +4928,41 @@ daosEl.addEventListener('click', (e) => {
     if (details) return openDetails(details.dataset.details)
 
     const actions = e.target.closest('[data-actions]')
+    const revote = e.target.closest('[data-revote]')
+    if (revote) {
+        const dao = daoById(revote.dataset.revote)
+        const { keep, drop } = dao ? castableSlate(dao) : { keep: [], drop: [] }
+        if (!session || busy || !keep.length) return
+        return submitCardVote(dao, keep, drop)
+    }
+
     if (actions) return openPanel(actions.dataset.actions)
 })
+
+// One DAO's vote, refreshed from its card. Reports through the status line
+// rather than a panel note — neither overlay is open when this is pressed.
+async function submitCardVote(dao, keep, drop) {
+    busy = true
+    render()
+    setStatus(`Refreshing your vote in ${dao.title} — check your wallet…`)
+    try {
+        await session.transact({ actions: [voteAction(dao, keep)] }, { broadcast: true })
+        await sleep(2500)
+        await loadPosition()
+        setStatus(`Vote refreshed in ${dao.title}.${drop.length
+            ? ` Dropped ${drop.map((d) => d.name).join(', ')} — no longer standing.`
+            : ''}`)
+    } catch (err) {
+        if (isUserCancel(err)) setStatus('Vote refresh cancelled.')
+        else {
+            console.error('Vote refresh failed:', err)
+            setStatus(readableError(err), 'error')
+        }
+    } finally {
+        busy = false
+        render()
+    }
+}
 
 // Re-reads everything without a page load, so a connected wallet survives it.
 async function refreshAll() {
