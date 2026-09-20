@@ -1,45 +1,134 @@
 /* ==========================================================================
    DAO Manager — every Alien Worlds DAO and who sits on its council.
 
-   The page has one job, so it has one accent. Gold marks a seat and the group
-   currently being shown; everything else is a grey line on a near-black ground.
+   A work tool, not the game. Neutral surfaces, one accent, and type sized to be
+   read rather than to look like a HUD. The palette and the scale are the ones
+   ALE Stats uses, so the two read as the same system.
+
+   The names below are the ones the rest of this file already speaks, kept as the
+   interface: `--gold` is the accent, `--void` is the page, `--panel` is a card.
+   They no longer describe their colours, which is the cost of not rewriting
+   1700 lines of selectors to rename them.
+
+   Light by default. Dark follows the operating system unless the page says
+   otherwise, exactly as ALE Stats does.
    ========================================================================== */
 
 :root {
-    --void:        #05060d;
-    --panel:       rgba(15, 17, 32, .62);
-    --panel-solid: #0c0e1a;
-    --panel-in:    rgba(6, 7, 14, .5);
+    color-scheme: light;
 
-    --line:      rgba(150, 160, 210, .16);
-    --line-soft: rgba(150, 160, 210, .08);
+    /* Surfaces. `--void` is the page behind everything, `--panel` a card on it,
+       `--panel-in` a well inside a card. */
+    --void:        #f4f4f2;
+    --panel:       #fcfcfb;
+    --panel-solid: #fcfcfb;
+    --panel-in:    #f0efec;
 
-    --text:       #e7e9f7;
-    --text-muted: #8e93b4;
-    --text-faint: #5b5f7d;
+    --line:      #e2e1dc;
+    --line-soft: #ebeae6;
 
-    --gold:      #f2b73c;
-    --gold-hot:  #ffdc94;
-    --gold-soft: rgba(242, 183, 60, .10);
-    --gold-glow: rgba(242, 183, 60, .28);
+    --text:       #0b0b0b;
+    --text-muted: #52514e;
+    --text-faint: #6f6e69;
 
-    /* The watched accounts. A second voice, used for nothing else on the page,
-       so a blue name anywhere means one of that list and a blue marker means
-       enough of them at one table. */
-    --blue:      #4da3ff;
-    --blue-hot:  #93c6ff;
-    --blue-soft: rgba(77, 163, 255, .11);
-    --blue-glow: rgba(77, 163, 255, .45);
+    /* The one accent: interactive things, the group being shown, a threshold
+       that has been met. `--gold-hot` is its hover, `--gold-soft` its wash. */
+    --gold:      #2a78d6;
+    --gold-hot:  #1c5ca8;
+    --gold-soft: #e5effb;
+    --gold-glow: rgba(42, 120, 214, .22);
 
-    --danger: #ff5a6e;
-    --ok:     #4ad6a0;
+    /* The watched accounts. A second voice used for nothing else, so a marked
+       name anywhere means one of that list. Orange rather than another blue,
+       because the accent is blue now and the two have to stay tellable apart at
+       a glance. */
+    --blue:      #b4501f;
+    --blue-hot:  #8f3d16;
+    --blue-soft: #fbeee7;
+    --blue-glow: rgba(180, 80, 31, .30);
 
-    --font: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-    --mono: 'Share Tech Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    --danger: #c53030;
+    --ok:     #0a7f0a;
 
-    /* One cut corner, top-left. A machined part, not a rounded box. */
-    --cut:    polygon(14px 0, 100% 0, 100% 100%, 0 100%, 0 14px);
-    --cut-sm: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px);
+    --shadow: 0 1px 2px rgb(0 0 0 / 5%), 0 1px 3px rgb(0 0 0 / 4%);
+
+    --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    /* Account names and proposal ids are strings people compare character by
+       character, so they keep a monospace face — but the system one, which needs
+       no webfont and looks native wherever it lands. */
+    --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono', Menlo, Consolas, monospace;
+
+    --radius:    10px;
+    --radius-sm: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme='light'])) {
+        color-scheme: dark;
+
+        --void:        #121211;
+        --panel:       #1a1a19;
+        --panel-solid: #1a1a19;
+        --panel-in:    #222220;
+
+        --line:      #2f2f2c;
+        --line-soft: #262624;
+
+        --text:       #ffffff;
+        --text-muted: #c3c2b7;
+        --text-faint: #9d9c93;
+
+        --gold:      #3987e5;
+        --gold-hot:  #5598e7;
+        --gold-soft: #1d2a3b;
+        --gold-glow: rgba(57, 135, 229, .26);
+
+        --blue:      #e08a5a;
+        --blue-hot:  #eda478;
+        --blue-soft: #2e2119;
+        --blue-glow: rgba(224, 138, 90, .32);
+
+        --danger: #e66767;
+        --ok:     #3cb43c;
+
+        --shadow: none;
+    }
+}
+
+:root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --void:        #121211;
+    --panel:       #1a1a19;
+    --panel-solid: #1a1a19;
+    --panel-in:    #222220;
+
+    --line:      #2f2f2c;
+    --line-soft: #262624;
+
+    --text:       #ffffff;
+    --text-muted: #c3c2b7;
+    --text-faint: #9d9c93;
+
+    --gold:      #3987e5;
+    --gold-hot:  #5598e7;
+    --gold-soft: #1d2a3b;
+    --gold-glow: rgba(57, 135, 229, .26);
+
+    --blue:      #e08a5a;
+    --blue-hot:  #eda478;
+    --blue-soft: #2e2119;
+    --blue-glow: rgba(224, 138, 90, .32);
+
+    --danger: #e66767;
+    --ok:     #3cb43c;
+
+    --shadow: none;
+}
+
+/* Figures are read down a column, so they line up. */
+.num, .app-n, .wp-pay b, .tlm, .count, .alloc-figs dd, .mine dd {
+    font-variant-numeric: tabular-nums;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -60,13 +149,15 @@ html, body {
     -webkit-font-smoothing: antialiased;
 }
 
-.ground {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    background: radial-gradient(ellipse 90% 60% at 50% -10%, #141733 0%, #05060d 62%);
+/* Focus has to be visible on a light surface, where the old glow was invisible. */
+:where(a, button, input, select, textarea):focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
 }
+
+/* Kept as an element so the markup does not have to change, but it no longer
+   paints anything: a tool's background is its background. */
+.ground { display: none; }
 
 .app {
     position: relative;
@@ -90,11 +181,10 @@ html, body {
 }
 
 .head h1 {
-    font-size: 25px;
-    font-weight: 600;
-    letter-spacing: .13em;
-    text-transform: uppercase;
-    line-height: 1.1;
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: -.01em;
+    line-height: 1.2;
 }
 
 .sub {
@@ -127,7 +217,7 @@ html, body {
     border: 1px solid rgba(242, 183, 60, .34);
     padding: 10px 17px;
     cursor: pointer;
-    clip-path: var(--cut-sm);
+    border-radius: var(--radius-sm);
     transition: background .15s, color .15s;
 }
 .btn:hover:not(:disabled) { background: rgba(242, 183, 60, .19); color: var(--gold-hot); }
@@ -155,7 +245,7 @@ html, body {
     padding: 9px 12px;
     background: var(--panel);
     border: 1px solid var(--line);
-    clip-path: var(--cut-sm);
+    border-radius: var(--radius-sm);
     white-space: nowrap;
     cursor: help;
 }
@@ -176,7 +266,7 @@ html, body {
     min-width: 190px;
     background: var(--panel-solid);
     border: 1px solid var(--line);
-    clip-path: var(--cut-sm);
+    border-radius: var(--radius-sm);
 }
 
 .wallet-who {
@@ -244,7 +334,7 @@ html, body {
     display: inline-flex;
     border: 1px solid var(--line);
     background: var(--panel);
-    clip-path: var(--cut-sm);
+    border-radius: var(--radius-sm);
     margin-bottom: 26px;
 }
 
@@ -302,7 +392,7 @@ html, body {
 .dao {
     background: var(--panel);
     border: 1px solid var(--line);
-    clip-path: var(--cut);
+    border-radius: var(--radius);
     padding: 18px 18px 8px;
 }
 
@@ -510,9 +600,9 @@ html, body {
     overflow-y: auto;
     background: var(--panel-solid);
     border: 1px solid var(--line);
-    clip-path: var(--cut);
+    border-radius: var(--radius);
     padding: 20px 20px 24px;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, .6);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 8%);
 }
 
 .panel-head {
@@ -1761,3 +1851,40 @@ body.is-details, body.is-modal { overflow: hidden; }
 
 .wp-form .cp-field { margin-top: 12px; }
 .wp-form .cp-grid { align-items: end; }
+
+/* ── Buttons and tabs speak normally ─────────────────────────────────────── */
+/*
+   Overrides rather than edits to each rule, so the one decision sits in one
+   place and the components keep their own spacing and colour. Uppercase is
+   still used, deliberately, on the small eyebrow labels - .mc, .mine dt,
+   .panel-k, .app-tag and the table headers - where a few tracked-out characters
+   read as "this is a label" and not as emphasis.
+*/
+.btn,
+.switch-btn,
+.card-btn,
+.act-go,
+.act-mini,
+.act-max,
+.wallet-item {
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.btn, .switch-btn { font-weight: 500; font-size: 13px; }
+.card-btn, .act-go { font-weight: 500; font-size: 13px; }
+.act-mini, .act-max { font-size: 12px; }
+
+/* Section headings in the full-page views were tracked-out uppercase at 11px,
+   which made every heading look like a caption. */
+.d-block h3 {
+    text-transform: none;
+    letter-spacing: -.01em;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+/* A card sits on the page rather than being cut out of it. */
+.dao, .d-inner, .modal-box {
+    box-shadow: var(--shadow);
+}

@@ -145,6 +145,33 @@ live/all — start at their defaults rather than making the hash carry them. And
 with the council preselected and the fields blank, which is clearer than being
 thrown back to the grid having lost the page as well.
 
+## The look
+
+A work tool, not the game. The palette, the type scale and the light/dark
+handling are [ALE Stats](https://foxbaguette.github.io/ale-stats/)'s, so the two
+read as one system: neutral surfaces, a single accent, and type sized to be read
+rather than to look like a HUD. Light by default; dark follows the operating
+system.
+
+The token *names* in `styles.css` are the old ones — `--gold` is the accent,
+`--void` is the page, `--panel` is a card. They stopped describing their colours
+when the theme changed, which is the price of not renaming them through 1700
+lines of selectors. The block at the top of the file says so.
+
+Two colours carry meaning and nothing else does:
+
+| | |
+|---|---|
+| **Accent** (blue) | interactive things, the group being shown, a threshold that has been met |
+| **Watchlist** (orange) | one of the watched accounts, and only ever that |
+
+They have to stay tellable apart at a glance, which is why the watchlist is not
+simply another blue now that the accent is one.
+
+Uppercase with wide tracking survives on the small eyebrow labels — table
+headers, the `MC CONTROLLED` tag, a figure's caption — where a few tracked-out
+characters read as "this is a label". It is gone from everything people press.
+
 ## Connecting a wallet
 
 Optional, and top-right. [WharfKit](https://wharfkit.com) with the Anchor and
@@ -696,7 +723,7 @@ DOM.
 ## The watchlist
 
 `WATCHED` in `app.js` is a hand-supplied set of accounts. Any custodian in it is
-drawn in blue wherever it appears, and any DAO where they hold `CONTROL_THRESHOLD`
+drawn in the watchlist colour wherever it appears, and any DAO where they hold `CONTROL_THRESHOLD`
 seats or more gets an **MC controlled** marker. Both are edited in one place:
 
 ```js
@@ -706,14 +733,14 @@ const CONTROL_THRESHOLD = 3
 
 Nothing on chain says these accounts are related — the marker means "this many
 of the watched accounts hold seats here" and nothing more. It carries the count
-it came from in its tooltip so the claim can be checked against the blue names
+it came from in its tooltip so the claim can be checked against the marked names
 directly underneath it.
 
 The rule runs over every DAO, so unions get the marker on the same terms as
 syndicates. At 3 of 5 the current list marks **Naron, Neri, Veles** and
 **Kavian Union, Neri Union, Veles Union**.
 
-Blue is used for nothing else on the page, so a blue name is always a watched
+That colour is used for nothing else on the page, so a marked name is always a watched
 account. The bullet beside each name is tinted along with the text, so the
 highlight does not rely on telling two hues apart.
 
