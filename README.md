@@ -217,6 +217,46 @@ rounded — and the symbol is dropped with it, since the card a figure sits in i
 already the DAO whose token it is. Each row carries the exact asset string in its
 tooltip, so nothing is unrecoverable.
 
+### The node pool
+
+Every candidate node is probed in parallel at boot, survivors are ranked by
+latency, and reads are spread across all of them. A cold load is about a hundred
+reads and settles in **five seconds**; it used to take twenty.
+
+Four things got it there:
+
+- **The probe is quick.** 1.5s, with a patient 6s pass only if the quick one
+  finds nothing — which is the slow-connection case, where every node can time
+  out at once and strand the page claiming the chain is down.
+- **The per-node budget is 5 reads per 2 seconds**, up from 3 per 3. It is *per
+  node*, so nine healthy nodes carry about twenty-two reads a second between
+  them.
+- **Failing nodes sit out.** Two consecutive failures bench a node for a minute.
+  `fails` was already being counted and then never acted on, so a node that
+  started refusing mid-session kept its turn in the rotation and burned a retry
+  every time it came round.
+- **Lag is checked.** A second, parallel `get_info` pass over the nodes that
+  already answered drops anything more than three minutes behind head. Unknown
+  lag passes — the check is there to catch a node that is demonstrably stale, not
+  to demand proof of freshness from one that simply will not answer `get_info`.
+
+**The probe must stay on `get_table_rows`.** Moving it to `get_info` for one
+commit put a DAO on the page as "unavailable", and the reason is worth keeping:
+it is not a CORS check. The preflight is triggered by the POST and the content
+type, not the path, and a node that allows one endpoint allows the other. It is a
+**load** check. A node at its own rate limit answers with an error carrying no
+CORS headers, so the browser reports a refused read as a CORS failure — and the
+endpoint being rate limited is the one this app hammers, which is
+`get_table_rows`, not `get_info`. Probing the cheap endpoint tells you a node is
+up. Probing the expensive one tells you it will serve *you*.
+
+Reads that must agree with each other go through `pinnedReads`, which runs the
+group against one node and moves the **whole group** to another node if it fails.
+Retrying only the failed member would reintroduce exactly the split this exists
+to prevent. Before that existed, one bad node took a whole DAO down with it: a
+pinned read bypassed the scheduler *and* the retry loop, so there was nowhere
+else for it to go.
+
 ### Pacing, and why it is a correctness measure
 
 Reads are spread across **every** healthy node, and no single node is asked for

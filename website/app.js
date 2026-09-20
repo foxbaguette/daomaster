@@ -103,19 +103,37 @@ const HIDDEN = new Set(['testa', 'testb'])
 // just risk an HTTP 429 — it gets answered with an empty `rows` array, which is
 // indistinguishable from "nothing staked" and silently renders as a holder
 // having nothing. Pacing this is a correctness measure, not just politeness.
-const RATE_LIMIT = 3
-const RATE_WINDOW = 3000
+// Five in two seconds is two and a half reads a second from any ONE node, and
+// the budget is per node — nine healthy nodes carry about twenty-two a second
+// between them. The old 3-in-3s was a third of that, and a cold load spends
+// roughly a hundred reads, which is where twenty seconds of waiting came from.
+const RATE_LIMIT = 5
+const RATE_WINDOW = 2000
 
-// The scheduler is the real throttle, so the worker count only has to be high
-// enough to keep every node busy.
-const CONCURRENCY = 6
-// A first pass short enough to pick a genuinely fast node, and a second pass
-// long enough that nothing healthy can miss it.
-const PROBE_TIMEOUT = 6000
-const PROBE_RETRY_TIMEOUT = 15000
+// High enough to keep every node's budget spent rather than to cap anything: the
+// scheduler is the throttle, and the workers only have to outnumber it.
+const CONCURRENCY = 16
+
+// A node that cannot answer get_info in a second and a half is not one to read
+// from. The patient pass exists for slow connections, where the quick one can
+// time out on everything at once and strand the page claiming the chain is down.
+const PROBE_TIMEOUT = 1500
+const PROBE_RETRY_TIMEOUT = 6000
+
+// A node this far behind head serves reads from an older chain state. Free to
+// check while probing, and it is the same staleness that once made a stakes read
+// count the same tokens twice.
+const MAX_LAG_SECONDS = 180
 
 // A read that fails gets re-issued against a different node before giving up.
 const MAX_ATTEMPTS = 3
+
+// Consecutive failures before a node sits out, and for how long. `fails` was
+// already counted and then never acted on, so a node that started refusing CORS
+// mid-session kept its turn in the rotation and burned a retry every time it
+// came round.
+const BENCH_AFTER = 2
+const BENCH_MS = 60000
 
 // ── State ─────────────────────────────────────────────────────────────────
 
@@ -203,7 +221,8 @@ const sessionKit = new SessionKit({
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function rawPost(body, url, timeout, path = 'get_table_rows') {
+async function rawPost(body, url, timeout, path) {
+    path = path || 'get_table_rows'
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeout)
     try {
@@ -232,8 +251,13 @@ async function acquireNode(count = 1) {
         const now = Date.now()
         let best = null
         let soonest = Infinity
+        let benched = 0
 
         for (const node of pool) {
+            // A node that keeps failing sits out rather than taking its turn and
+            // costing a retry each time.
+            if ((node.benchedUntil ?? 0) > now) { benched++; continue }
+
             while (node.recent.length && now - node.recent[0] >= RATE_WINDOW) node.recent.shift()
             if (node.recent.length + count <= RATE_LIMIT) {
                 if (!best || node.recent.length < best.recent.length) best = node
@@ -246,19 +270,25 @@ async function acquireNode(count = 1) {
             for (let i = 0; i < count; i++) best.recent.push(now)
             return best
         }
+        // Nothing eligible because everything is benched: a wrong node beats no
+        // node, so the bench is cleared rather than waited out.
+        if (benched === pool.length) {
+            for (const node of pool) node.benchedUntil = 0
+            continue
+        }
         // Every node is spent; wait for the earliest window to roll over.
-        await sleep(Math.max(60, Math.min(soonest === Infinity ? 400 : soonest, 400)))
+        await sleep(Math.max(40, Math.min(soonest === Infinity ? 250 : soonest, 250)))
     }
 }
 
 // `url` bypasses the scheduler entirely — that path is the probe, which is
 // deliberately one call to one named node.
-async function post(body, { timeout = 15000, url = null } = {}) {
+async function post(body, { timeout = 15000, url = null, path } = {}) {
     // A named node has already had its budget charged by whoever pinned it (or
     // is the probe, which is metering itself). It still counts toward progress.
     if (url) {
         try {
-            return await rawPost(body, url, timeout)
+            return await rawPost(body, url, timeout, path)
         } finally {
             noteRequest()
         }
@@ -274,6 +304,7 @@ async function post(body, { timeout = 15000, url = null } = {}) {
         } catch (err) {
             lastErr = err
             node.fails = (node.fails ?? 0) + 1
+            if (node.fails >= BENCH_AFTER) node.benchedUntil = Date.now() + BENCH_MS
         } finally {
             noteRequest()
         }
@@ -360,13 +391,45 @@ async function postRows(code, scope, table, extra = {}) {
 async function probe(url, timeout = PROBE_TIMEOUT) {
     const t0 = performance.now()
     try {
+        // get_table_rows, because it is the request the app actually makes. A
+        // probe on a different endpoint is a probe of something else.
+        //
+        // What that buys is not a CORS check — the preflight is triggered by the
+        // POST and the content type, not by the path, and a node that allows one
+        // allows the other. It is a LOAD check. A node at its own rate limit
+        // answers with an error whose response carries no CORS headers, so the
+        // browser reports a refused read as a CORS failure; and the endpoint that
+        // gets rate limited is the one being hammered, which is this one, not
+        // get_info. Probing the cheap endpoint says a node is up. Probing the
+        // expensive one says it will serve us.
         const data = await post(
             { json: true, code: DIRECTORY, scope: DIRECTORY, table: 'dacs', limit: 1 },
             { timeout, url })
+        if (!Array.isArray(data.rows)) return null
         // `at` is when this node served the probe, so its budget can start from
         // there rather than from zero.
-        return Array.isArray(data.rows) ? { url, ms: performance.now() - t0, at: Date.now() } : null
+        return { url, ms: performance.now() - t0, at: Date.now() }
     } catch {
+        return null
+    }
+}
+
+// How far behind head a node is serving from. A node can be quick and still be
+// handing out an old chain state — the failure that once had a stakes read count
+// the same tokens twice.
+//
+// A second pass rather than part of the probe, because get_table_rows cannot
+// report a head time and the probe has to stay on get_table_rows (see above).
+// Run only over the nodes that already answered, and parallel across them, so it
+// costs one round trip for the whole pool.
+async function lagOf(url) {
+    try {
+        const info = await post({}, { timeout: PROBE_TIMEOUT, url, path: 'get_info' })
+        const head = Date.parse(`${info.head_block_time}Z`)
+        return Number.isFinite(head) ? (Date.now() - head) / 1000 : null
+    } catch {
+        // A node that will not serve get_info but does serve get_table_rows is
+        // still perfectly usable. Unknown lag is not disqualifying.
         return null
     }
 }
@@ -396,6 +459,30 @@ async function mapLimit(items, limit, fn) {
 //
 // Test A and Test B have treasuries, so they sit with the syndicates.
 const classify = (accountKeys) => accountKeys.includes(TREASURY) ? 'syndicate' : 'union'
+
+// Runs a group of reads that must agree with each other against ONE node, and
+// moves the whole group to another node if that one fails. Splitting them across
+// nodes is what this exists to prevent: at different block heights they can
+// disagree and invent, say, an at-risk seat that is not at risk.
+//
+// The retry has to re-run the group, not the failed member — a half-answered
+// group is the exact inconsistency being avoided.
+async function pinnedReads(count, build) {
+    let lastErr
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const node = await acquireNode(count).catch(() => null)
+        try {
+            return await Promise.all(build(node ? { url: node.url } : {}))
+        } catch (err) {
+            lastErr = err
+            if (node) {
+                node.fails = (node.fails ?? 0) + 1
+                if (node.fails >= BENCH_AFTER) node.benchedUntil = Date.now() + BENCH_MS
+            }
+        }
+    }
+    throw lastErr
+}
 
 async function loadDao(row) {
     const accounts = Object.fromEntries(row.accounts.map((a) => [a.key, a.value]))
@@ -432,10 +519,7 @@ async function loadDao(row) {
         // Who sits now, and who would sit if a period ran this second. The two
         // are compared against each other, so they come from one node: split
         // across a block boundary they can disagree and invent an at-risk seat.
-        const node = await acquireNode(3).catch(() => null)
-        const opts = node ? { url: node.url } : {}
-
-        const [seated, allCands, globals] = await Promise.all([
+        const [seated, allCands, globals] = await pinnedReads(3, (opts) => [
             getRows(dao.custodianContract, dao.id, 'custodians1', { limit: 100, ...opts }),
             // The whole table rather than a page of the `bydecayed` index. It is
             // one call either way — 85 rows at its largest, every scope answering
@@ -540,6 +624,25 @@ async function pickEndpoint() {
             .filter(Boolean)
     }
 
+    // Drop anything serving from far behind head. Unknown lag passes: the check
+    // is there to catch a node that is demonstrably stale, not to require proof
+    // of freshness from one that simply will not answer get_info.
+    const lags = await Promise.all(healthy.map((h) => lagOf(h.url)))
+    healthy = healthy.filter((h, i) => {
+        const lag = lags[i]
+        if (lag != null && lag > MAX_LAG_SECONDS) {
+            console.warn(`Skipping ${h.url}: ${Math.round(lag)}s behind head`)
+            return false
+        }
+        h.lag = lag
+        return true
+    })
+
+    if (!healthy.length) {
+        setStatus('Every node that answered is behind the chain head.', 'error', { retry: true })
+        return false
+    }
+
     healthy.sort((a, b) => a.ms - b.ms)
 
     if (!healthy.length) {
@@ -555,7 +658,17 @@ async function pickEndpoint() {
     // scheduler by design — it is one deliberate call to one named node — but it
     // is still a call that node just served, and starting the budget at zero
     // would let the first burst put four on it inside the window.
-    pool = healthy.map(({ url, at }) => ({ url, recent: [at], fails: 0 }))
+    pool = healthy.map(({ url, at }) => ({ url, recent: [at], fails: 0, benchedUntil: 0 }))
+
+    // With every node idle, "least loaded" resolves to whichever comes first in
+    // the array every single time — so a burst all lands on one node, which is
+    // exactly the condition that gets answered with empty rows. Rotating the
+    // starting point spreads the tie. Ranking is untouched; this only decides who
+    // wins a draw.
+    if (pool.length > 1) {
+        const turn = Math.floor(Math.random() * pool.length)
+        pool = [...pool.slice(turn), ...pool.slice(0, turn)]
+    }
     apiUrl = healthy[0].url
     sessionKit.setEndpoint(Chains.WAX.id, apiUrl)   // signing follows reads
     return true
