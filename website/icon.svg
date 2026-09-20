@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="DAO Manager">
+    <title>DAO Manager</title>
+
+    <!--
+      A quorum: five seats on a council, three of them filled — the threshold
+      every DAO here runs on, and the one number the whole app is about.
+
+      Drawn as dashes on one circle rather than five paths, so the segments stay
+      exactly even and the gaps stay exactly equal at any size. The circumference
+      is 2 * pi * 11 = 69.115; a fifth of it is 13.823; a 2.4 gap leaves 11.423
+      of stroke per seat.
+
+      Rotated -90 about the centre so the ring starts at the top rather than at
+      three o'clock.
+
+      No background plate. A favicon is composited onto a tab bar whose colour
+      the page does not control, so the mark is drawn in colours that hold on
+      either — and `currentColor` is avoided for the same reason, since there is
+      no inherited colour to rely on here.
+    -->
+    <g transform="rotate(-90 16 16)" fill="none" stroke-linecap="butt">
+        <!-- All five seats. -->
+        <circle cx="16" cy="16" r="11" stroke="#c3cdd8" stroke-width="6"
+                stroke-dasharray="11.423 2.4"/>
+        <!-- The three that carry it. -->
+        <circle cx="16" cy="16" r="11" stroke="#2a78d6" stroke-width="6"
+                stroke-dasharray="11.423 2.4 11.423 2.4 11.423 30.046"/>
+    </g>
+</svg>

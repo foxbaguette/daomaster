@@ -1,4 +1,4 @@
-// DAO Master — every Alien Worlds DAO and the custodians currently seated on it.
+// DAO Manager — every Alien Worlds DAO and the custodians currently seated on it.
 //
 // Two reads:
 //
@@ -49,7 +49,7 @@ const ENDPOINTS = [
 
 const DIRECTORY = 'index.worlds'
 const EXPLORER  = 'https://waxblock.io/account/'
-const APP_NAME  = 'DAO Master'
+const APP_NAME  = 'DAO Manager'
 
 // Trilium is the game's own token and belongs to no single DAO, so it is read
 // straight from its contract and shown beside the account rather than on a card.
