@@ -34,6 +34,12 @@ import { WalletPluginCloudWallet } from '@wharfkit/wallet-plugin-cloudwallet'
 // Known-good from curl but REJECTED by the browser, do not re-add without
 // retesting in a browser: wax.greymass.com, wax.eu.eosamsterdam.net,
 // hyperion.wax.eosrio.io, wax-public.neftyblocks.com, api.wax.greeneosio.com.
+//
+// Removed for a different reason: api.wax.detroitledger.tech. It passes a lone
+// probe and then refuses under any real load — its rate-limited responses carry
+// no CORS headers, so the browser reports them as CORS failures, a run of them
+// from that node alone on every heavy read. The bench catches it, but only after
+// it has cost a probe slot and two failed reads every session.
 const ENDPOINTS = [
     'https://wax.blacklusion.io',
     'https://api.waxsweden.org',
@@ -44,7 +50,6 @@ const ENDPOINTS = [
     'https://api.hivebp.io',
     'https://wax.eosphere.io',
     'https://wax.eosusa.io',
-    'https://api.wax.detroitledger.tech',
 ]
 
 const DIRECTORY = 'index.worlds'
@@ -1175,6 +1180,9 @@ function render() {
         $('refreshVotesBtn').hidden = true
         $('todoBtn').hidden = true
     }
+    // Point allocators have no proposals of their own, so the overview button
+    // belongs to the two council grids only.
+    $('overviewBtn').hidden = group === 'msig'
 
     const open = daosEl.querySelector(`.dao[data-id="${selectedId}"]`)
     if (open) open.classList.add('is-selected')
@@ -2020,6 +2028,7 @@ panelInner.addEventListener('click', async (e) => {
 // — which is the whole point of an escape hatch.
 document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
+    if (!overviewEl.hidden) return closeOverview()
     if (!createEl.hidden) return closeCreate()
     if (!todoEl.hidden) return closeTodo()
     if (!detailsEl.hidden) return closeDetails()
@@ -2323,6 +2332,7 @@ const DETAILS_TABS = ['council', 'proposals', 'worker']
 
 async function openDetails(id, tab) {
     closeTodo()
+    closeOverview()
     detailsId = id
     detailsKind = 'dao'
     // Proposals unless a restored view asks for another. A syndicate has no
@@ -4463,6 +4473,7 @@ async function openCreate({ dao, from } = {}) {
     closePanel()
     closeDetails()
     closeTodo()
+    closeOverview()
 
     createForm = {
         daoId: dao?.id ?? daos[0]?.id ?? '',
@@ -4794,6 +4805,7 @@ async function openTodo() {
     todoPicked = new Set()
     closePanel()
     closeDetails()
+    closeOverview()
     renderTodo()
 
     const wanted = todoDaos().map(fetchProposals).filter(Boolean)
@@ -5114,6 +5126,7 @@ async function refreshAll() {
 $('refreshBtn').addEventListener('click', refreshAll)
 $('refreshVotesBtn').addEventListener('click', refreshGroupVotes)
 $('todoBtn').addEventListener('click', openTodo)
+$('overviewBtn').addEventListener('click', () => openOverview(group))
 
 const GROUP_TABS = [['tabSyndicates', 'syndicate'], ['tabUnions', 'union'], ['tabMsig', 'msig']]
 
@@ -5164,6 +5177,9 @@ function parseViewHash(raw) {
 
     const [head, second, third] = parts
     if (head === 'todo') return { view: 'todo' }
+    // Its own head rather than a segment under a grid: "all" would be
+    // indistinguishable from a DAO id in that slot.
+    if (head === 'proposals') return { view: 'overview', group: SLUG_GROUP[second] ?? 'syndicate' }
     if (head === 'create') return { view: 'create', id: second ?? null }
 
     const group = SLUG_GROUP[head]
@@ -5180,6 +5196,7 @@ function parseViewHash(raw) {
 
 function viewHash() {
     if (createOpen) return `#create${createForm?.daoId ? `/${createForm.daoId}` : ''}`
+    if (overviewOpen) return `#proposals/${GROUP_SLUG[overviewGroup] ?? 'syndicates'}`
     if (todoOpen) return '#todo'
 
     // An overlay names its own grid rather than whichever one happens to be
@@ -5220,8 +5237,271 @@ function applyView(w) {
     // Restored empty: the form's contents are gone with the reload whatever we
     // do, and landing back on the page you were on with blank fields is clearer
     // than being thrown back to the grid having lost the page as well.
-    if (w.view === 'create') openCreate({ dao: daoById(w.id) ?? undefined })
+    if (w.view === 'create') return openCreate({ dao: daoById(w.id) ?? undefined })
+    if (w.view === 'overview') {
+        setGroup(w.group)
+        openOverview(w.group)
+    }
 }
+
+
+// ── Every proposal in a group, on one page ────────────────────────────────
+//
+// The per-DAO tabs answer "what is waiting on this council". This answers the
+// other question — what has been happening across the whole group, newest first
+// — which no per-DAO view can, because it spans twelve scopes.
+//
+// On the unions it merges in the worker proposals from prop.worlds. They are a
+// different contract and a different state machine, so they keep their own
+// badges rather than being flattened into msig's three states; what they share
+// is a date and a council, which is what the list is ordered and grouped by.
+//
+// **On the date.** A msig proposal carries no creation timestamp. The row has
+// `earliest_exec_time`, which msigworlds sets to null on propose and only fills
+// in once the approval threshold is met — so it is absent on everything that
+// never passed — and `modified_date`, which is written at creation and then
+// moved by every approval. `modified_date` is therefore the only timestamp every
+// row has, and it means "last activity", not "created". Worker proposals do
+// carry a real `created_at`, and use it. Each cell says which it is showing.
+const overviewEl = $('overview')
+let overviewOpen = false
+let overviewGroup = 'syndicate'
+let overviewKind = 'all'      // all, msig, worker
+
+function overviewDaos(g = overviewGroup) {
+    return daos.filter((d) => d.group === g)
+}
+
+// One shape for two contracts. Only the fields the list actually sorts, groups
+// and prints are unified — everything particular to a kind stays on `row`.
+function overviewRows() {
+    const out = []
+
+    for (const dao of overviewDaos()) {
+        for (const p of proposalsCache.get(dao.id) ?? []) {
+            out.push({
+                kind: 'msig',
+                dao,
+                id: p.proposal_name,
+                title: msigTitle(p),
+                proposer: p.proposer,
+                when: Date.parse(`${p.modified_date}Z`),
+                whenIs: 'last activity — msigworlds records no creation time',
+                row: p,
+            })
+        }
+
+        const wp = workerCache.get(dao.id)
+        for (const p of wp?.props ?? []) {
+            out.push({
+                kind: 'worker',
+                dao,
+                id: p.proposal_id,
+                title: p.title,
+                proposer: p.proposer,
+                when: wpTime(p.created_at),
+                whenIs: 'created',
+                row: p,
+                wp,
+            })
+        }
+    }
+
+    const wanted = overviewKind === 'all' ? null : overviewKind
+    return out
+        .filter((r) => !wanted || r.kind === wanted)
+        // Newest first. An unparseable date sorts last rather than to the top,
+        // which is where NaN would otherwise land it.
+        .sort((a, b) => (Number.isFinite(b.when) ? b.when : -Infinity) -
+                        (Number.isFinite(a.when) ? a.when : -Infinity))
+}
+
+async function openOverview(g = group) {
+    overviewOpen = true
+    overviewGroup = g === 'msig' ? 'syndicate' : g
+    overviewKind = 'all'
+    closePanel()
+    closeDetails()
+    closeTodo()
+    renderOverview()
+
+    // Both contracts, for every DAO in the group. Each fetch is a no-op when its
+    // cache is already warm, so reopening the view costs nothing.
+    const jobs = []
+    for (const dao of overviewDaos()) {
+        const a = fetchProposals(dao)
+        if (a) jobs.push(a)
+        const b = fetchWorker(dao)
+        if (b) jobs.push(b)
+    }
+    if (jobs.length) {
+        startPhase(jobs.length)
+        await Promise.all(jobs)
+        endPhase()
+    }
+    if (overviewOpen) renderOverview()
+}
+
+function closeOverview() {
+    overviewOpen = false
+    overviewEl.hidden = true
+    document.body.classList.remove('is-details')
+    syncHash()
+}
+
+function renderOverview() {
+    if (!overviewOpen) return
+    let html
+    try {
+        html = buildOverview()
+    } catch (err) {
+        console.error('Could not render the proposal overview:', err)
+        html = `<div class="d-inner">
+            <header class="d-head">
+                <button class="btn btn-ghost" id="ovBack" type="button">← All DAOs</button>
+                <div class="d-title"><h2>All proposals</h2></div>
+            </header>
+            <p class="panel-note is-error">This view could not be drawn: ${esc(String(err.message ?? err))}</p>
+        </div>`
+    }
+    overviewEl.innerHTML = html
+    overviewEl.hidden = false
+    document.body.classList.add('is-details')
+    syncHash()
+}
+
+// The state cell, drawn in the vocabulary of whichever contract the row is from.
+function overviewState(r) {
+    if (r.kind === 'worker') {
+        const state = wpEffectiveState(r.row)
+        return `<span class="wp-badge is-${WP_TONE[state] ?? 'wait'} is-inline">
+            <b>${esc(WP_LABEL[state] ?? state)}</b></span>`
+    }
+    const p = r.row
+    const expired = p.state === MSIG_OPEN && isExpired(p)
+    const label = expired ? 'expired' : STATE_LABEL[p.state] ?? `state ${p.state}`
+    const tone = expired ? 'expired' : STATE_CLASS[p.state] ?? 'open'
+    return `<span class="pill is-${esc(tone)}">${esc(label)}</span>`
+}
+
+function overviewApprovals(r) {
+    if (r.kind === 'worker') {
+        const t = wpTally(r.dao, r.row, r.wp)
+        return `<td class="num" title="${esc(`${t.yes} of ${t.need} in the ${t.round} round`)}">${
+            t.yes}<span class="app-need">/${t.need}</span></td>`
+    }
+    const need = r.dao.approvalThreshold ?? 3
+    const got = approvalCount(r.row)
+    const who = approvalsOf(r.row).map((a) => a.level?.actor).filter(Boolean).join(', ')
+    return `<td class="num ${got >= need ? 'is-enough' : ''}" title="${
+        esc(who ? `signed by ${who}` : 'nobody has signed yet')}">${
+        got}<span class="app-need">/${need}</span></td>`
+}
+
+function buildOverview() {
+    const label = overviewGroup === 'syndicate' ? 'Syndicates' : 'Unions'
+    const inGroup = overviewDaos()
+    const reading = inGroup.filter((d) =>
+        !proposalsCache.has(d.id) || (hasWorkerProposals(d) && !workerCache.has(d.id))).length
+
+    const rows = overviewRows()
+    const counts = {
+        msig: rows.filter((r) => r.kind === 'msig').length,
+        worker: rows.filter((r) => r.kind === 'worker').length,
+    }
+    const unions = overviewGroup === 'union'
+
+    return `
+    <div class="d-inner">
+        <header class="d-head">
+            <button class="btn btn-ghost" id="ovBack" type="button">← All DAOs</button>
+            <div class="d-title">
+                <h2>${esc(label)} · all proposals</h2>
+                <p class="panel-sub">${rows.length} across ${inGroup.length} councils, newest first${
+                    reading ? ` · reading ${reading} more…` : ''}</p>
+            </div>
+            <div class="switch d-switch ov-switch" role="tablist">
+                <button class="switch-btn${overviewGroup === 'syndicate' ? ' is-on' : ''}"
+                        data-ov-group="syndicate" role="tab" type="button">Syndicates</button>
+                <button class="switch-btn${overviewGroup === 'union' ? ' is-on' : ''}"
+                        data-ov-group="union" role="tab" type="button">Unions</button>
+            </div>
+        </header>
+
+        ${unions ? `
+            <div class="switch d-switch" role="tablist">
+                <button class="switch-btn${overviewKind === 'all' ? ' is-on' : ''}"
+                        data-ov-kind="all" role="tab" type="button">
+                    Everything <span class="count">${counts.msig + counts.worker}</span></button>
+                <button class="switch-btn${overviewKind === 'msig' ? ' is-on' : ''}"
+                        data-ov-kind="msig" role="tab" type="button">
+                    Council <span class="count">${counts.msig}</span></button>
+                <button class="switch-btn${overviewKind === 'worker' ? ' is-on' : ''}"
+                        data-ov-kind="worker" role="tab" type="button">
+                    Worker <span class="count">${counts.worker}</span></button>
+            </div>` : ''}
+
+        <div class="d-scroll ov-scroll">
+        <table class="d-table ov-table">
+            <thead><tr>
+                <th class="num">Date</th><th>Council</th><th>Proposal</th>
+                <th>State</th><th class="num">Approvals</th>
+            </tr></thead>
+            <tbody>
+            ${rows.map((r) => `
+                <tr class="ov-row" data-ov-dao="${esc(r.dao.id)}" data-ov-tab="${
+                    r.kind === 'worker' ? 'worker' : 'proposals'}">
+                    <td class="num ov-when" title="${esc(r.whenIs)}">${
+                        Number.isFinite(r.when) ? esc(isoDay(r.when)) : '—'}
+                        <span class="d-dim">${Number.isFinite(r.when)
+                            ? esc(`${fmtAge(Date.now() - r.when)} ago`) : ''}</span></td>
+                    <td class="ov-dao">${esc(r.dao.title)}
+                        <span class="d-dim">${r.kind === 'worker' ? 'worker' : 'council'}</span></td>
+                    <td>
+                        <b class="row-title">${esc(r.title.length > 90
+                            ? `${r.title.slice(0, 90)}…` : r.title)}</b>
+                        <span class="row-meta">
+                            <span class="who">${esc(r.proposer)}</span>
+                            ${WATCHED.has(r.proposer)
+                                ? '<span class="pill is-mc-author" title="Raised by a watched account">MC</span>' : ''}
+                            <span class="row-id">${esc(r.id)}</span>
+                        </span>
+                    </td>
+                    <td>${overviewState(r)}</td>
+                    ${overviewApprovals(r)}
+                </tr>`).join('') || `<tr><td colspan="5" class="d-dim">${
+                    reading ? 'Reading…' : 'No proposals found in this group.'}</td></tr>`}
+            </tbody>
+        </table>
+        </div>
+    </div>`
+}
+
+overviewEl.addEventListener('click', (e) => {
+    if (e.target.closest('#ovBack')) return closeOverview()
+
+    const g = e.target.closest('[data-ov-group]')
+    if (g) {
+        overviewGroup = g.dataset.ovGroup
+        overviewKind = 'all'
+        return openOverview(overviewGroup)
+    }
+
+    const k = e.target.closest('[data-ov-kind]')
+    if (k) {
+        overviewKind = k.dataset.ovKind
+        return renderOverview()
+    }
+
+    // A row is a way in, not a dead end: it opens that council on the tab the
+    // proposal actually lives in.
+    const row = e.target.closest('[data-ov-dao]')
+    if (row) {
+        closeOverview()
+        setGroup(overviewGroup)
+        return openDetails(row.dataset.ovDao, row.dataset.ovTab)
+    }
+})
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 

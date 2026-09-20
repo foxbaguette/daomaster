@@ -1537,6 +1537,31 @@ body.is-details, body.is-modal { overflow: hidden; }
    will refuse, and the tooltip says which. */
 .card-btn.is-stale { color: var(--danger); border-color: rgba(255, 90, 110, .35); }
 
+/* ── All proposals ───────────────────────────────────────────────────────── */
+
+/* The group switch sits in the header rather than under it: this view is ABOUT
+   one group, so which one is part of its title, not a filter below it. */
+.ov-switch { margin: 0 0 0 auto; align-self: center; }
+
+.ov-scroll { max-height: none; }
+
+/* Tighter than the per-DAO tables. This one is read by scanning down a long
+   list, not by studying one row. */
+.ov-table td { padding: 10px; }
+.ov-when { white-space: nowrap; font-family: var(--mono); }
+.ov-dao { white-space: nowrap; }
+.ov-row { cursor: pointer; }
+
+/* The worker badge is a block in its own table; here it shares a row with a
+   pill, so it drops to the same weight. */
+.wp-badge.is-inline {
+    flex-direction: row;
+    align-items: center;
+    min-width: 0;
+    padding: 4px 9px;
+}
+.wp-badge.is-inline b { font-size: 11px; }
+
 .refresh-votes { margin: 0; }
 
 /* Some DAO in the group would not answer, so the batch cannot be complete. The

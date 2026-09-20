@@ -109,6 +109,12 @@
               rather than anything to do with the tab you happen to be looking at.
             -->
             <button class="btn btn-ghost todo-btn" id="todoBtn" type="button" hidden>To do</button>
+
+            <!--
+              Everything that has been proposed across a whole group, newest
+              first. Needs no wallet: it is a record, not a queue.
+            -->
+            <button class="btn btn-ghost" id="overviewBtn" type="button">All proposals</button>
         </div>
         </div>
 
@@ -147,6 +153,9 @@
 
     <!-- Raising a proposal, from scratch or copied from an existing one. -->
     <div class="details" id="create" hidden></div>
+
+    <!-- Every proposal in one group, across every council in it. -->
+    <div class="details" id="overview" hidden></div>
 
     <script type="module" src="app.js"></script>
 </body>
