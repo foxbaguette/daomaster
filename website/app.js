@@ -108,11 +108,22 @@ const HIDDEN = new Set(['testa', 'testb'])
 // just risk an HTTP 429 — it gets answered with an empty `rows` array, which is
 // indistinguishable from "nothing staked" and silently renders as a holder
 // having nothing. Pacing this is a correctness measure, not just politeness.
-// Five in two seconds is two and a half reads a second from any ONE node, and
-// the budget is per node — nine healthy nodes carry about twenty-two a second
-// between them. The old 3-in-3s was a third of that, and a cold load spends
-// roughly a hundred reads, which is where twenty seconds of waiting came from.
-const RATE_LIMIT = 5
+// Measured, not guessed. A cold load is 69 reads with a median round trip of
+// 106ms; at ten in flight that is under a second of network. It was taking five,
+// and a request timeline showed why — concurrency sat at ONE to THREE for most
+// of the load, peaking at ten only in bursts. The budget was the bottleneck.
+//
+// Twelve in two seconds is six reads a second from any one node, and the budget
+// is per node: nine healthy nodes carry fifty-four a second between them, which
+// is more than the whole load. Across nine nodes, 69 reads is under eight each —
+// nowhere near enough to trouble a public node.
+//
+// The original fear behind the low number was real but is addressed elsewhere
+// now: a node under pressure answers with an EMPTY rows array rather than an
+// error, which reads as "nothing staked" and renders as fact. Spreading across
+// nodes makes that far less likely, and `suspectEmpty` below catches it when it
+// happens instead of trusting it.
+const RATE_LIMIT = 12
 const RATE_WINDOW = 2000
 
 // High enough to keep every node's budget spent rather than to cap anything: the
@@ -489,6 +500,20 @@ async function pinnedReads(count, build) {
     throw lastErr
 }
 
+// A node under pressure answers with an empty `rows` array instead of an error.
+// That is the one failure mode that renders as fact — "no custodians seated",
+// "nothing staked" — rather than as a problem, and it is why reads here were
+// paced so conservatively for so long.
+//
+// It cannot be caught in general: plenty of tables are legitimately empty. It
+// CAN be caught where the answer is known to be impossible, which is what this
+// is for. A DAO with no council AND no candidates AND no globals does not exist;
+// something answered with nothing. Throwing sends `pinnedReads` to another node.
+function suspectEmpty(dao, seated, cands, globals) {
+    if (seated.length || cands.length || globals.length) return
+    throw new Error(`${dao.id}: empty council, candidates and globals in one read`)
+}
+
 async function loadDao(row) {
     const accounts = Object.fromEntries(row.accounts.map((a) => [a.key, a.value]))
     const [precision, code] = String(row.symbol?.sym ?? '').split(',')
@@ -539,6 +564,8 @@ async function loadDao(row) {
             // only statement of when the next election is due.
             postRows(dao.custodianContract, dao.id, 'dacglobals', { limit: 1, ...opts }),
         ])
+
+        suspectEmpty(dao, seated, allCands, globals)
 
         const g = {}
         for (const kv of globals[0]?.data ?? []) g[kv.key] = kv.value?.[1]
@@ -609,51 +636,64 @@ async function loadDao(row) {
     return dao
 }
 
+// Resolves with the first probe that comes back healthy, or null if every one of
+// them fails. Deliberately NOT Promise.any: that rejects only once all have
+// rejected, and a probe resolves with null rather than rejecting.
+function firstAnswer(promises) {
+    return new Promise((resolve) => {
+        let left = promises.length
+        if (!left) return resolve(null)
+        let done = false
+        for (const p of promises) {
+            p.then((r) => {
+                if (r && !done) { done = true; resolve(r) }
+                if (--left === 0 && !done) resolve(null)
+            })
+        }
+    })
+}
+
 // Settles on the fastest node that answers. Everything downstream reads the
 // chain, so there is no point loading DAOs — or restoring a session — against a
 // node that is not there.
 async function pickEndpoint() {
     setStatus('Finding a node…')
 
-    // Ten TLS handshakes to ten cold hosts, all at once, on a slow connection is
-    // enough to blow a short deadline on every one of them — and the page then
-    // dead-ends claiming the whole chain is unreachable. So a first round that
-    // comes back empty is treated as "too slow", not as "nothing is there", and
-    // gets one more round with a deadline nothing healthy should ever miss.
-    let healthy = (await Promise.all(ENDPOINTS.map((u) => probe(u, PROBE_TIMEOUT))))
-        .filter(Boolean)
+    // Waiting for ALL ten probes cost a second and a quarter of dead time at the
+    // head of every load, almost all of it spent waiting on nodes that were
+    // never going to answer. The fastest replies in about 30ms.
+    //
+    // So: start on the first node that answers, and let the rest of the pool
+    // arrive behind it. Reads begin roughly a second earlier and simply get more
+    // nodes to spread over as the probes land.
+    const pending = ENDPOINTS.map((u) => probe(u, PROBE_TIMEOUT))
+    const first = await firstAnswer(pending)
 
+    // Ten TLS handshakes to ten cold hosts at once, on a slow connection, is
+    // enough to blow a short deadline on every one of them — and the page then
+    // dead-ends claiming the whole chain is unreachable. A first round that comes
+    // back empty is "too slow", not "nothing is there", and gets one more round
+    // with a deadline nothing healthy should ever miss.
+    let healthy = first ? [first] : []
     if (!healthy.length) {
         setStatus('Nothing answered in time — trying again more patiently…')
         healthy = (await Promise.all(ENDPOINTS.map((u) => probe(u, PROBE_RETRY_TIMEOUT))))
             .filter(Boolean)
     }
 
-    // Drop anything serving from far behind head. Unknown lag passes: the check
-    // is there to catch a node that is demonstrably stale, not to require proof
-    // of freshness from one that simply will not answer get_info.
-    const lags = await Promise.all(healthy.map((h) => lagOf(h.url)))
-    healthy = healthy.filter((h, i) => {
-        const lag = lags[i]
-        if (lag != null && lag > MAX_LAG_SECONDS) {
-            console.warn(`Skipping ${h.url}: ${Math.round(lag)}s behind head`)
-            return false
-        }
-        h.lag = lag
-        return true
-    })
-
     if (!healthy.length) {
-        setStatus('Every node that answered is behind the chain head.', 'error', { retry: true })
+        setStatus('No WAX node answered.', 'error', { retry: true })
         return false
     }
 
     healthy.sort((a, b) => a.ms - b.ms)
 
-    if (!healthy.length) {
-        setStatus('No WAX node answered.', 'error', { retry: true })
-        return false
-    }
+    // No lag check here on purpose. It costs a round trip, which is the one this
+    // rewrite exists to save, and with a single candidate in hand a stale node
+    // would fail the whole boot rather than be skipped. Every node that joins
+    // AFTER this one is lag-checked as it arrives, and a node that starts
+    // failing is benched — so a stale first node stops being used within
+    // seconds rather than being relied on.
 
     // Every node that answered carries reads from here on. More nodes is a
     // bigger budget: the per-node limit is fixed, so the aggregate rate is
@@ -676,7 +716,29 @@ async function pickEndpoint() {
     }
     apiUrl = healthy[0].url
     sessionKit.setEndpoint(Chains.WAX.id, apiUrl)   // signing follows reads
+
+    // Everything still in flight joins the pool as it answers. Reads that have
+    // already started simply find more nodes to spread over on their next turn.
+    const have = new Set(pool.map((n) => n.url))
+    for (const p of pending) {
+        p.then(async (r) => {
+            if (!r || have.has(r.url)) return
+            const lag = await lagOf(r.url)
+            if (lag != null && lag > MAX_LAG_SECONDS) {
+                return console.warn(`Skipping ${r.url}: ${Math.round(lag)}s behind head`)
+            }
+            have.add(r.url)
+            pool.push({ url: r.url, recent: [r.at], fails: 0, benchedUntil: 0 })
+        })
+    }
+
     return true
+}
+
+function countsAndRender() {
+    $('countSyndicates').textContent = daos.filter((d) => d.group === 'syndicate').length
+    $('countUnions').textContent     = daos.filter((d) => d.group === 'union').length
+    render()
 }
 
 async function loadDaos() {
@@ -695,12 +757,23 @@ async function loadDaos() {
 
     setStatus(`${shown.length} DAOs — reading councils…`)
     startPhase(shown.length)
-    daos = await mapLimit(shown, CONCURRENCY, loadDao)
-    endPhase()
-    daos.sort((a, b) => a.title.localeCompare(b.title))
 
-    $('countSyndicates').textContent = daos.filter((d) => d.group === 'syndicate').length
-    $('countUnions').textContent     = daos.filter((d) => d.group === 'union').length
+    // Painted as they arrive rather than all at once at the end. The last DAO
+    // does not arrive any sooner, but the first one does — by several seconds —
+    // and a page that fills in is a page that is working.
+    daos = []
+    let paint = null
+    await mapLimit(shown, CONCURRENCY, async (row) => {
+        const dao = await loadDao(row)
+        daos.push(dao)
+        daos.sort((a, b) => a.title.localeCompare(b.title))
+        // One repaint a frame at most: twelve councils landing together would
+        // otherwise rebuild the grid twelve times in the same tick.
+        if (!paint) paint = requestAnimationFrame(() => { paint = null; countsAndRender() })
+        return dao
+    })
+    endPhase()
+    countsAndRender()
 
     const failed = daos.filter((d) => d.error)
     setStatus(failed.length
@@ -5503,7 +5576,40 @@ overviewEl.addEventListener('click', (e) => {
     }
 })
 
-// ── Boot ──────────────────────────────────────────────────────────────────
+// ── Theme ─────────────────────────────────────────────────────────────────
+//
+// The attribute is already on <html> — an inline script in the head puts it
+// there before the first paint. This only has to keep the buttons in step with
+// it and write the viewer's choice down.
+//
+// "System" is a choice like the other two, so it is remembered as one: it takes
+// the attribute off and lets prefers-color-scheme decide.
+const THEME_KEY = 'daomanager.theme'
+
+function currentTheme() {
+    return document.documentElement.dataset.theme ?? 'system'
+}
+
+function setTheme(next) {
+    if (next === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = next
+    try { localStorage.setItem(THEME_KEY, next) } catch { /* private window */ }
+    paintThemeSwitch()
+}
+
+function paintThemeSwitch() {
+    const now = currentTheme()
+    for (const btn of document.querySelectorAll('[data-theme-set]')) {
+        btn.setAttribute('aria-pressed', String(btn.dataset.themeSet === now))
+    }
+}
+
+$('themeSwitch').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-theme-set]')
+    if (btn) setTheme(btn.dataset.themeSet)
+})
+
+paintThemeSwitch()
 
 setWalletChrome()
 

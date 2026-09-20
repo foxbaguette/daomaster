@@ -14,6 +14,25 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap"
           rel="stylesheet">
 
+    <!--
+      LIGHT unless the viewer has said otherwise. Not "whatever the operating
+      system is" — that is a third option people opt into, and defaulting to it
+      meant anyone whose machine is in dark mode never saw the light theme at
+      all.
+
+      Inline and above the stylesheet on purpose: the attribute has to be on
+      <html> before the first paint, or the page renders light and then flips.
+    -->
+    <script>
+        try {
+            var t = localStorage.getItem('daomanager.theme')
+            document.documentElement.dataset.theme = (t === 'light' || t === 'dark') ? t : 'light'
+            if (t === 'system') delete document.documentElement.dataset.theme
+        } catch (e) {
+            document.documentElement.dataset.theme = 'light'
+        }
+    </script>
+
     <link rel="stylesheet" href="styles.css">
 
     <!--
@@ -49,6 +68,12 @@
             -->
             <div class="wallet" id="wallet">
                 <span class="wallet-note" id="walletNote" hidden></span>
+                <div class="seg" id="themeSwitch" role="group" aria-label="Colour theme">
+                    <button type="button" data-theme-set="light">Light</button>
+                    <button type="button" data-theme-set="dark">Dark</button>
+                    <button type="button" data-theme-set="system">System</button>
+                </div>
+
                 <button class="btn btn-ghost" id="refreshBtn" type="button"
                         title="Re-read everything from the chain">Refresh</button>
                 <span class="tlm" id="tlm" hidden></span>

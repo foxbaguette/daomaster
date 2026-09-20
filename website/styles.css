@@ -1888,3 +1888,35 @@ body.is-details, body.is-modal { overflow: hidden; }
 .dao, .d-inner, .modal-box {
     box-shadow: var(--shadow);
 }
+
+/* ── Theme switch ────────────────────────────────────────────────────────── */
+
+/* Three states, one control. A segmented button rather than a single toggle,
+   because "system" is a third choice and a toggle cannot hold it. */
+.seg {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--panel);
+}
+
+.seg button {
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-faint);
+    background: transparent;
+    border: 0;
+    padding: 6px 11px;
+    cursor: pointer;
+    transition: color .12s, background .12s;
+}
+
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button:hover { color: var(--text); }
+
+.seg button[aria-pressed="true"] {
+    color: var(--gold);
+    background: var(--gold-soft);
+}
